@@ -204,7 +204,7 @@
     </dl>
     <h3>Modes</h3>
     <ul>
-        <li><b>Chart (M4)</b>: per pixel column its first, last, min and max: what a line drawn from all the points shows, in about 4 points a column, for any range.</li>
+        <li><b>Chart (M4)</b>: per pixel column its first, last, min and max: what a line drawn from all the points shows, in about 4 points a column, for any range. Every column's own min / max is exact (a chunk straddling a column edge is decoded, 0.1 - 0.3 s more over years); <code>exact: false</code> in <code>msg.query</code> is the fast form, whose column min / max can miss a point within one chunk (at most an hour) of the column's edge.</li>
         <li><b>Buckets</b>: avg / min / max / sum / count / first / last per interval (offset: a shift starting at 06:00 is <code>8h</code> + <code>6h</code>).</li>
         <li><b>Raw</b>: every point (limit 1 000 000 a tag). <b>Last</b>: the newest value.</li>
     </ul>

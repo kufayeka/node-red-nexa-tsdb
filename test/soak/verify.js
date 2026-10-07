@@ -77,7 +77,11 @@ function checkBucket(i, res, q) {
     return null;
 }
 
-// returns { bad, exact, columns }
+// a column's own min / max may miss a point within one chunk of the column's edge (the chunk is placed by its four points):
+// "explained" = the true extreme lies that close to an edge. m4 is exact by default (every column exact); exact: false is the fast form.
+const CHUNK_SPAN = Math.min(3600000, 1024 * meta.period) + meta.period;
+
+// returns { bad, exact, explained, columns }
 function checkM4(i, res, q) {
     const r = res[model.names[i]];
     if (!r) return { bad: 'the tag is missing from the answer' };
@@ -89,8 +93,10 @@ function checkM4(i, res, q) {
         last = { t, v };
         if (numeric) {
             if (v < gmin) gmin = v; if (v > gmax) gmax = v;
-            const c = Math.floor((t - q.from) / size);
-            let a = cols.get(c); if (!a) cols.set(c, (a = { min: Infinity, max: -Infinity })); if (v < a.min) a.min = v; if (v > a.max) a.max = v;
+            const c = Math.floor((t - q.from) / size), edge = Math.min(t - (q.from + c * size), q.from + (c + 1) * size - t);
+            let a = cols.get(c); if (!a) cols.set(c, (a = { min: Infinity, max: -Infinity, minEdge: 0, maxEdge: 0 }));
+            if (v < a.min) { a.min = v; a.minEdge = edge; } else if (v === a.min && edge > a.minEdge) a.minEdge = edge;     // the occurrence farthest from an edge
+            if (v > a.max) { a.max = v; a.maxEdge = edge; } else if (v === a.max && edge > a.maxEdge) a.maxEdge = edge;
         }
     });
     if (!first) return r.t.length ? { bad: `${r.t.length} points where the range has none` } : { bad: null, exact: 0, columns: 0 };
@@ -109,9 +115,17 @@ function checkM4(i, res, q) {
     let rmin = Infinity, rmax = -Infinity;
     for (const v of r.v) { if (v < rmin) rmin = v; if (v > rmax) rmax = v; }
     if (rmin !== gmin || rmax !== gmax) return { bad: `overall min / max ${rmin} / ${rmax}, expected ${gmin} / ${gmax}` };
-    let exact = 0;
-    cols.forEach((w, c) => { const g = got.get(c); if (g && g.min === w.min && g.max === w.max) exact++; });
-    return { bad: null, exact, columns: cols.size };
+    let exact = 0, explained = 0, unexplained = null;
+    cols.forEach((w, c) => {
+        const g = got.get(c);
+        if (g && g.min === w.min && g.max === w.max) { exact++; return; }
+        const minOk = g && g.min === w.min || w.minEdge <= CHUNK_SPAN, maxOk = g && g.max === w.max || w.maxEdge <= CHUNK_SPAN;
+        if (minOk && maxOk && g && g.min >= w.min && g.max <= w.max) explained++;
+        else if (!unexplained) unexplained = `column ${c} of ${q.width}: min / max ${g ? g.min + ' / ' + g.max : 'none'}, expected ${w.min} / ${w.max} (a true extreme ${Math.round(Math.min(w.minEdge, w.maxEdge) / 1000)} s from an edge: not explained by a straddling chunk)`;
+    });
+    if (unexplained) return { bad: unexplained };
+    if (q.exact !== false && exact !== cols.size) return { bad: `${cols.size - exact} of ${cols.size} columns differ (m4 is exact by default)` };
+    return { bad: null, exact, explained, columns: cols.size };
 }
 
 function checkLast(i, res, q) {
@@ -145,7 +159,7 @@ function makeQuery(qi) {
     const q = { tags: idx.map((i) => model.names[i]), from, to };
     if (mode === 'last') { q.mode = 'last'; q.to = to; delete q.from; }
     else if (mode === 'raw') { q.mode = 'raw'; q.limit = 1000000; }
-    else if (mode === 'm4') { q.mode = 'm4'; q.width = pick([100, 300, 1200, 4000]); }
+    else if (mode === 'm4') { q.mode = 'm4'; q.width = pick([100, 300, 1200, 4000]); if (rand() < 0.3) q.exact = false; }
     else {
         const sizes = ['1m', '5m', '15m', '1h', '8h', '1d'].filter((s) => Q.parseDuration(s) >= meta.period && (to - from) / Q.parseDuration(s) < 400000);
         q.mode = 'bucket'; q.bucket = pick(sizes.length ? sizes : ['1d']); q.agg = ['avg', 'min', 'max', 'sum', 'count', 'first', 'last'];
@@ -155,7 +169,7 @@ function makeQuery(qi) {
 }
 
 const failures = [], timing = { m4: [], bucket: [], raw: [], last: [] };
-let exactCols = 0, allCols = 0, checkedPoints = 0, openMs = [];
+let strictCols = 0, exactCols = 0, explainedCols = 0, allCols = 0, checkedPoints = 0, openMs = [];
 
 (async () => {
     console.log(`dataset: ${meta.tags} tags every ${meta.period / 1000} s, ${meta.days} days (${iso(meta.t0)} .. ${iso(meta.end)}), ${fmt(meta.steps * meta.tags * 0.98 / 1e6)} M points`);
@@ -188,20 +202,20 @@ let exactCols = 0, allCols = 0, checkedPoints = 0, openMs = [];
             if (mode === 'raw') bad = checkRaw(i, res, q);
             else if (mode === 'bucket') bad = checkBucket(i, res, q);
             else if (mode === 'last') bad = checkLast(i, res, q);
-            else { const m = checkM4(i, res, q); bad = m.bad; exactCols += m.exact || 0; allCols += m.columns || 0; }
+            else { const m = checkM4(i, res, q); bad = m.bad; if (q.exact === false) { exactCols += m.exact || 0; explainedCols += m.explained || 0; allCols += m.columns || 0; } else strictCols += m.columns || 0; }
             if (bad) failures.push({ qi, what: `${desc} - ${model.names[i]}: ${bad}` });
         }
         if (only !== null) console.log(desc, ms.toFixed(0) + ' ms', failures.length ? 'FAILED' : 'ok');
-        else if ((qi + 1) % 25 === 0) console.log(`${qi + 1} / ${QUERIES} queries, ${failures.length} failure(s)`);
+        else if ((qi + 1) % 25 === 0) console.log(`${qi + 1} / ${QUERIES} queries, ${failures.length} failure(s)  (this process ${(process.memoryUsage().rss / 1048576).toFixed(0)} MB)`);
     }
     await close();
 
     const pct = (a, p) => { const s = a.slice().sort((x, y) => x - y); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : 0; };
     console.log('\nmode     queries     p50      p95      max');
     for (const m of ['m4', 'bucket', 'raw', 'last']) console.log(m.padEnd(8), String(timing[m].length).padStart(7), (pct(timing[m], 0.5).toFixed(0) + ' ms').padStart(9), (pct(timing[m], 0.95).toFixed(0) + ' ms').padStart(8), (Math.max(0, ...timing[m]).toFixed(0) + ' ms').padStart(8));
-    if (allCols) console.log(`\nm4 columns whose own min and max are exact: ${exactCols} of ${allCols} (${(100 * exactCols / allCols).toFixed(2)} %); every returned point was a real point, the first / last / overall min and max exact`);
+    console.log('\nm4 (exact by default): ' + strictCols + ' columns checked, every one exact; every returned point a real point; first / last / overall min and max exact.');
+    if (allCols) console.log('m4 with exact: false (the fast form): columns exact ' + exactCols + ' of ' + allCols + ' (' + (100 * exactCols / allCols).toFixed(1) + ' %), ' + explainedCols + ' differ only by a point within one chunk of the column edge, 0 unexplained.');
     console.log(`open time: ${openMs.map((x) => x.toFixed(0)).join(', ')} ms`);
-    if (allCols && exactCols / allCols < 0.9) failures.push({ qi: -1, what: `only ${(100 * exactCols / allCols).toFixed(1)} % of the M4 columns are exact` });
     if (failures.length) {
         console.log(`\nFAILED: ${failures.length}`);
         failures.slice(0, 15).forEach((f) => console.log(' - ' + (f.qi >= 0 ? `query ${f.qi} (replay: --seed ${SEED} --only ${f.qi}): ` : '') + f.what));

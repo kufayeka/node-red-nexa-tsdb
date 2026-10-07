@@ -43,8 +43,8 @@ function meta() {
     if (DAY % period !== 0) { console.error('the period must divide a day (1m, 10s, 1s, 5m ...)'); process.exit(2); }
     const endDay = Math.floor((Date.now() - DAY) / DAY) * DAY;          // yesterday 00:00 UTC (never the future)
     const m = { t0: endDay - days * DAY, end: endDay, period, tags, days, steps: days * DAY / period, created: new Date().toISOString() };
-    // the disk: about 1.4 (dense) to 4 (slow data) bytes a point, plus the WAL; refuse a run the disk cannot hold
-    const points = m.steps * tags * 0.98, lo = points * 1.4, hi = points * 4;
+    // the disk: about 1.4 (dense) to 6 (slow data: measured 5.2 at 1 min) bytes a point, plus the WAL; refuse a run the disk cannot hold
+    const points = m.steps * tags * 0.98, lo = points * 1.4, hi = points * 6;
     fs.mkdirSync(dir, { recursive: true });
     let free = Infinity;
     try { const s = fs.statfsSync(dir); free = s.bavail * s.bsize; } catch (e) { /* unknown: no check */ }

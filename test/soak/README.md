@@ -33,10 +33,11 @@ month of a random year"):
 |---|---|
 | `raw` | every point exact, nothing missing, nothing extra |
 | `bucket` | per bucket: count, sum, min, max, first, last, avg exact (random size 1 min .. 1 day, shift offsets, edges that are not on the hour) |
-| `m4` | every returned point is a real point; the first, the last and the overall min / max exact; the columns' own min / max exact in nearly all columns (reported as a percentage, 90 % required) |
+| `m4` | every returned point is a real point; the first, the last and the overall min / max exact; **every column's own min / max exact** (a third of the m4 queries use `exact: false`, the fast form: then a column may differ only by a point within one chunk of its edge, reported as a percentage) |
 | `last` | the newest point at or before the time |
 
 It prints p50 / p95 / max per mode and the time to open the database (what a restart costs). Exit code 1 and the failing
 queries (with `--seed N --only i` to replay) when anything differs.
 
-Smoke run (30 tags every 10 s for 40 days, killed twice): 300 queries, no difference, 97.8 % of the M4 columns exact.
+Smoke run (30 tags every 10 s for 40 days, killed twice): 300 queries, no difference.
+`--preset small` (5 years, 262 M points, 1.34 GB, 9.3 min): 300 queries, no difference; see the engine README for the times. The generator's disk estimate for slow data is 6 bytes a point at most (measured 5.2).

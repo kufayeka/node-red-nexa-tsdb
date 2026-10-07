@@ -81,11 +81,14 @@ A tag's store is set when it is created; its keep follows the rules of each star
   bucket: "8h", offset: "6h",              // bucket: size and alignment (shifts from 06:00)
   agg: ["avg", "min", "max", "sum", "count", "first", "last"],
   fill: "none",                            // none | null | previous
-  limit: 1000000,                          // raw
+  limit: 1000000,                          // raw: at most this many points a tag
+  maxPoints: 5000000,                      // the whole answer: more is refused with the reason (never built until memory runs out)
+  exact: true,                             // m4 (default true): see below
   format: "series" }                       // series { tag: { type, t: [], v: [] } } | rows [{ tag, ts, value }]
 ```
 
-A string tag returns its text; its min / max / avg / sum are null. M4 keeps every column's true min and max (the tests check 1 200 / 1 200 columns exact).
+A string tag returns its text; its min / max / avg / sum are null. 
+**M4 and `exact`:** per pixel column M4 returns its first, last, min and max. By default (`exact: true`) every column's own min and max are exact: a chunk that straddles a column edge is decoded and its points placed one by one (checked on 90 804 random columns of a 5-year dataset: all exact). `exact: false` is the faster form: such a chunk is placed by its four points, so a column's min / max can miss a point within one chunk (at most an hour) of its edge (97.7 % of columns exact in the soak test, the rest differ only that way; the returned points are always real points and the overall min / max / first / last always exact). Cost of exact over 5 years: +0.14 s at 1 200 px, +0.33 s at 4 000 px.
 
 ## On disk
 
@@ -141,6 +144,21 @@ The engine alone (`npm run bench`):
 **100 000 tags:** the memory holds (a tag's head grows with its points: ~164 MB for 100 000 tags), but writing at 1 s is **0.7× real time on Windows**: a tag's index is its own files, and a checkpoint touching 100 000 of them spends ~170 s opening files (~1.7 ms each on Windows; Linux opens are ~10-50× faster). The envelope of this version: **about 20 000 tags at 1 s or 10 000 at 100 ms** on one writer. Past that: an index journal (one append stream, merged into the per-tag files in bulk), planned.
 
 **Ten years:** the hour and day summaries of a tag are 0.9 MB a year (10 000 tags: 9 GB a year; 100 000 tags: 88 GB), and a 10-year chart reads ~3 650 day summaries per tag (a few ms). Raw data at 100 ms without report-by-exception is ~0.5 TB a year per 1 000 tags: keep raw days to weeks and let the summaries carry the years, and store changes (deadband) where the process allows.
+
+## Soak test: 5 years, 262 million points, random ranges (`test/soak/`, `npm run soak:gen` / `soak:verify`)
+
+100 tags every 1 min for 1 825 days, written in 9.3 min, **1.34 GB** (5.2 bytes a point: a slow tag is one small chunk an hour, so it costs more per point than a dense one). 300 random queries (random tags, random ranges over the whole 5 years, a fifth of them a whole calendar month of a random year; raw, bucket with shift offsets and edges off the hour, m4, last), each compared with the model's recomputation: **0 differences**; the process memory stayed flat. Through the engine in one process:
+
+| mode | p50 | p95 | max |
+|---|---|---|---|
+| m4 (chart) | 11 ms | 277 ms | 555 ms |
+| bucket | 5 ms | 2.1 s | 10 s |
+| raw | 12 ms | 1.3 s | 2.4 s |
+| last | 26 ms | 85 ms | 110 ms |
+
+Opening the 5-year database: about 1 s. **What is slow, and why:** a bucket finer than an hour (or on a half-hour offset) over years has to decode raw chunks, and a slow tag keeps one small chunk per hourly file: 73 % of the time is `open` / `read` / `close` (one tag, 1 year, 15-min buckets: 0.8 s; 4 years: 2.8 s; 3 tags, 4 years: ~10 s). Anything answered from the summaries (hour, shift, day, week, month aggregates; charts) stays in milliseconds. The structural fix (day files for slow data, decoupled from the hourly summaries) is not done.
+
+Found by running it, and fixed: `EMFILE` (a query kept every hourly segment it touched open: now an LRU of 32), `last` with a past `to`, a 3-4 s open (a `stat` of all 43 800 segments: now only the last two), a 14 s raw query (an open + close per chunk), M4 columns 42 - 82 % exact (now exact by default). On a machine whose pagefile is full (here: `explorer.exe` held 14.6 GB of commit) allocations fail whatever the engine does; a result larger than `maxPoints` is refused with its reason.
 
 ## Limits of this MVP (next steps)
 
