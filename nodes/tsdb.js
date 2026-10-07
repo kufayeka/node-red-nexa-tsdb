@@ -103,6 +103,19 @@ module.exports = function (RED) {
         node.on('input', function (msg, send, done) {
             if (!db || !db.engine) { done(new Error('no historian (check the database node)')); return; }
             try {
+                // msg.query as an array is a batch: every item is a query (over the node's own settings), the answer an array of { ok, result | error }
+                if (Array.isArray(msg.query)) {
+                    const qs = msg.query.map((x) => Object.assign({}, own, x && typeof x === 'object' ? x : {}));
+                    const tb = Date.now();
+                    db.engine.queryBatch(qs).then((r) => {
+                        msg.payload = r;
+                        const bad = r.filter((x) => !x.ok).length;
+                        node.status({ fill: bad ? 'yellow' : 'green', shape: 'dot', text: r.length + ' queries' + (bad ? ', ' + bad + ' failed' : '') + ', ' + (Date.now() - tb) + ' ms' });
+                        send(msg);
+                        done();
+                    }, (e) => { node.status({ fill: 'red', shape: 'ring', text: e.message }); done(e); });
+                    return;
+                }
                 const q = Object.assign({}, own, msg.query && typeof msg.query === 'object' ? msg.query : {});
                 if (!q.tags || (Array.isArray(q.tags) && !q.tags.length)) q.tags = msg.topic ? [msg.topic] : [];
                 const t0 = Date.now();

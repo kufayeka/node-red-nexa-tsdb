@@ -14,13 +14,14 @@ This page is the manual. If you are new, read [What it is](#what-it-is), [What i
 4. [Nodes](#nodes)
 5. [Writing data](#writing-data)
 6. [Asking questions: queries and aggregates](#asking-questions-queries-and-aggregates)
-7. [Recipes](#recipes)
-8. [Storage and retention](#storage-and-retention)
-9. [Reliability](#reliability)
-10. [Administration](#administration)
-11. [Capacity planning](#capacity-planning)
-12. [Testing and benchmarks](#testing-and-benchmarks)
-13. [Limits](#limits)
+7. [Many queries in one call (batch)](#many-queries-in-one-call-batch)
+8. [Recipes](#recipes)
+9. [Storage and retention](#storage-and-retention)
+10. [Reliability](#reliability)
+11. [Administration](#administration)
+12. [Capacity planning](#capacity-planning)
+13. [Testing and benchmarks](#testing-and-benchmarks)
+14. [Limits](#limits)
 
 ## What it is
 
@@ -259,71 +260,175 @@ Give them in `agg`. An unknown name is an error that lists the known ones.
 - **A range older than retention says so.** The answer starts at the oldest kept time and the tag's series carries `clippedFrom`.
 - **Bad parameters are refused with a reason**, never an internal error.
 
-## Recipes
+## Many queries in one call (batch)
 
-**Energy used per hour from a kWh meter that resets**
+A dashboard with twenty panels can send all its queries at once. From JavaScript:
 
 ```js
-{ tags: "Meter1.kWh", from: "2026-10-06T00:00:00Z", to: "2026-10-07T00:00:00Z",
+const r = await db.queryBatch([
+  { tags: "Meter1.kWh", from: "-1d", mode: "bucket", bucket: "1h", agg: ["increase"] },
+  { tags: "Oven1.Temp", from: "-1h", mode: "bucket", bucket: "1m", agg: ["avg", "max"] },
+  { tags: "Line1.State", from: "-1d", mode: "range", agg: ["counts"] }
+]);
+// [ { ok: true, result: { ... } }, { ok: true, result: { ... } }, { ok: true, result: { ... } } ]
+```
+
+In the **tsdb-query** node, put an array in `msg.query`: each item is a query (over the node's own settings, so a shared `tz` can be set once), and `msg.payload` is the array of answers in the same order.
+
+- The answers come in the order of the queries: `{ ok: true, result }`, or `{ ok: false, error }` for one that failed. A failing query does not stop the others.
+- All of them use the same `now` (so `-1h` means the same hour in every query) and see the same data, since the worker writes nothing while it answers the batch.
+- At most 1 000 queries in a batch. The points of all the answers together are held to 5 000 000; the queries past that get an error and can be asked in another batch.
+
+**What a batch saves.** The calls, not the work: a query costs what it costs alone. Measured, 100 queries of hourly buckets over three days: 16 ms one by one with `await`, 9.4 ms started together with `Promise.all`, 8.3 ms as one batch (about 0.08 ms each, nearly all of it the query itself). The gains that matter are elsewhere: ask several aggregates of one tag in one query (`agg: ["avg", "max", "increase"]`, one pass over the data), and several tags in one query (`tags: ["A", "B"]` or a `*` pattern).
+
+## Recipes
+
+Every recipe shows the data, the query and the answer the engine gave. Times are UTC, on 2026-10-06; `t` is the start of the bucket in epoch milliseconds (`1791273600000` is 08:00).
+
+### Energy per hour from a kWh meter that resets
+
+The meter is read every 20 minutes. At 10:20 it was reset and counts again from 0.
+
+| Time | 08:00 | 08:20 | 08:40 | 09:00 | 09:20 | 09:40 | 10:00 | 10:20 | 10:40 | 11:00 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `Meter1.kWh` | 100.0 | 100.5 | 101.0 | 101.6 | 102.1 | 102.7 | 103.2 | **0.4** | 1.0 | 1.6 |
+
+```js
+{ tags: "Meter1.kWh", from: 1791273600000, to: 1791287940000,     // 08:00 to 11:59
   mode: "bucket", bucket: "1h", agg: ["increase"] }
 ```
 
-The meter climbs, then resets to 0 and climbs again: `increase` counts the climbing and takes the reset as a restart, so the hours that contain a reset are right. A plateau (the meter did not move) is 0.
-
-**Energy between two times**
-
 ```js
-{ tags: "Meter1.kWh", from: "2026-10-01T00:00:00Z", to: "2026-11-01T00:00:00Z",
-  mode: "range", agg: ["increase", "delta"] }
+{ "Meter1.kWh": {
+    type: "number",
+    t:        [1791273600000, 1791277200000, 1791280800000, 1791284400000],   // 08:00  09:00  10:00  11:00
+    increase: [1.0,           1.7,           1.5,           0.6]
+} }
 ```
 
-One row. `increase` is what was consumed. `delta` is the last value minus the value before; it is negative if there was a reset, which is why `increase` is the one for consumption and `delta` is for a value that does not reset. `reverse: true` flips the sign of `delta`, for a level that counts down.
+How to read it: 08:00 consumed 1.0 (100.0 to 101.0). The 09:00 hour includes the step 101.0 to 101.6 that happened between 08:40 and 09:00. The 10:00 hour holds the reset: 103.2 to 0.4 is not a negative, the meter restarted, so what it counted since (0.4) is the step; the hour is 0.5 + 0.4 + 0.6 = 1.5. (The engine returns floating point values such as `1.7000000000000028`; round when you display.)
 
-**The meter reads 0 now and then**
-
-A reading of `0` in the middle of a run (a communication loss) looks like a reset followed by a huge jump, and `increase` would count the jump as consumption. Tell it the zeros are missing readings:
+### Between two dates: one row
 
 ```js
-{ tags: "Meter1.kWh", from: "-1d", mode: "bucket", bucket: "1h", agg: ["increase"], ignoreZero: true }
+{ tags: "Meter1.kWh", from: 1791273600000, to: 1791287940000, mode: "range", agg: ["increase", "delta"] }
 ```
 
-Add `maxStep: 500` to also drop any single step bigger than 500 kWh, and `tolerance: 0.05` to ignore a jitter of a few hundredths downwards. A real reset to 0 is still handled: the zero is skipped, and the next reading after the reset is lower than the one before it, which is a restart. These options read the raw points.
-
-**Energy from a power signal (kW to kWh)**
-
 ```js
-{ tags: "Meter1.kW", from: "-30d", mode: "bucket", bucket: "1d", agg: ["integral", "twa", "max"], per: "h" }
+{ "Meter1.kWh": { type: "number", t: [1791273600000], increase: [4.8], delta: [-98.4] } }
 ```
 
-`integral` with `per: "h"` is kWh per day. `twa` is the average power weighted by time. Use `method: "step"` when each reading means "this much until the next reading" (a value logged on change); the default joins the points with lines (a signal sampled regularly). Add `maxGap: "10m"` if the logger can go offline and you do not want the gap filled.
+`increase` is what was consumed: 4.8 kWh (the four hours above added). `delta` is last minus first, 1.6 − 100.0: negative because of the reset, which is why consumption is `increase` and `delta` is for a value that does not reset. `reverse: true` flips the sign of `delta`, for a level that counts down.
 
-**How many times was the machine in a state**
+### The meter reads 0 for a moment
+
+A communication loss makes the meter read 0 in the middle of a run, then it comes back:
+
+| Time | 08:00 | 08:20 | 08:40 | 09:00 | 09:20 |
+|---|---|---|---|---|---|
+| `Meter2.kWh` | 100.0 | 100.5 | **0** | 101.0 | 101.5 |
 
 ```js
-{ tags: "Line1.State", from: "-7d", mode: "range",
-  agg: ["occurrences", "entries", "duration", "counts"], value: "Fault" }
+{ tags: "Meter2.kWh", from: 1791273600000, to: 1791280740000, mode: "range", agg: ["increase"] }
+// { "Meter2.kWh": { type: "number", t: [1791273600000], increase: [102.0] } }        a false jump of 101.0
 ```
 
-`occurrences`: how many readings said `Fault`. `entries`: how many times the machine *went into* Fault (a fault that lasts 100 readings is one entry). `duration`: how long it was in Fault, in ms. `counts`: all states at once. Use `mode: "bucket"` with `bucket: "1d"` for one row per day.
-
-**Running hours of a motor**
+The 0 looks like a reset and the way back looks like 101 kWh used. Tell it that a 0 is a missing reading:
 
 ```js
-{ tags: "Line2.Motor.Run", from: "-30d", mode: "bucket", bucket: "1d", agg: ["duration"], value: true }
+{ tags: "Meter2.kWh", from: 1791273600000, to: 1791280740000, mode: "range", agg: ["increase"], ignoreZero: true }
+// { "Meter2.kWh": { type: "number", t: [1791273600000], increase: [1.5] } }          0.5 + 0.5 + 0.5
 ```
 
-Divide the milliseconds by 3 600 000 for hours.
+`maxStep: 500` also drops any single step bigger than 500 kWh, and `tolerance: 0.05` ignores a jitter of a few hundredths downwards. A real reset to 0 is still handled: the zero is skipped, and the next reading is lower than the one before it, which is a restart. These options read the raw points.
 
-**Energy per month, week, day or hour: one query for a date range picker**
+### Energy from a power signal (kW to kWh)
+
+| Time | 08:00 | 08:30 | 09:00 | 09:30 | 10:00 | 10:30 | 11:00 |
+|---|---|---|---|---|---|---|---|
+| `Meter1.kW` | 10 | 10 | 20 | 20 | 10 | 0 | 0 |
 
 ```js
-{ tags: "Meter1.kWh", from: "2026-01-01", to: "2026-07-01", endExclusive: true,
+{ tags: "Meter1.kW", from: 1791273600000, to: 1791284400000,      // 08:00 to 11:00
+  mode: "bucket", bucket: "1h", agg: ["integral", "twa", "max"], per: "h" }
+```
+
+```js
+{ "Meter1.kW": {
+    type: "number",
+    t:        [1791273600000, 1791277200000, 1791280800000, 1791284400000],   // 08:00  09:00  10:00  11:00
+    integral: [12.5,          17.5,          2.5,           0],               // kWh
+    twa:      [12.5,          17.5,          2.5,           0],               // kW, weighted by time
+    max:      [10,            20,            10,            0]
+} }
+```
+
+08:00 to 09:00: 10 kW for half an hour is 5 kWh, then the line from 10 to 20 kW is 15 kW on average for half an hour, 7.5 kWh: 12.5 kWh. `method: "step"` would hold each reading until the next one instead of joining them with a line (for a value that is logged when it changes). `maxGap: "10m"` leaves out an interval longer than that, so a logger that was offline is not filled in.
+
+### How many times was the machine in a state
+
+`Line1.State` is read every 10 minutes: Running, Running, Idle, Idle, Fault, Fault, Fault, Running, Running (08:00 to 09:20).
+
+```js
+{ tags: "Line1.State", from: 1791273600000, to: 1791277200000,    // 08:00 to 09:00
+  mode: "range", agg: ["occurrences", "entries", "duration", "counts"], value: "Fault" }
+```
+
+```js
+{ "Line1.State": {
+    type: "string",
+    t:           [1791273600000],
+    occurrences: [3],                                  // readings that said Fault
+    entries:     [1],                                  // times it went into Fault
+    duration:    [1200000],                            // ms in Fault: 20 minutes
+    counts:      [{ Running: 2, Idle: 2, Fault: 3 }]   // every state at once
+} }
+```
+
+A fault that lasts 100 readings is 100 `occurrences` but one `entry`. Use `mode: "bucket"` with `bucket: "day"` for one row per day.
+
+### Running hours of a motor
+
+`Line2.Motor.Run` (boolean): true at 08:00, false at 08:20, true at 08:30, false at 09:00, false at 09:10.
+
+```js
+{ tags: "Line2.Motor.Run", from: 1791273600000, to: 1791277800000,   // 08:00 to 09:10
+  mode: "range", agg: ["duration", "entries"], value: true }
+```
+
+```js
+{ "Line2.Motor.Run": { type: "bool", t: [1791273600000], duration: [3000000], entries: [1] } }
+```
+
+3 000 000 ms: 20 + 30 minutes running. Divide by 3 600 000 for hours; with `bucket: "day"` it is the running hours per day.
+
+### One query for a date range picker
+
+```js
+{ tags: "Meter3.kWh", from: "2026-01-01", to: "2026-07-01", endExclusive: true,
   mode: "bucket", bucket: "auto", tz: "Asia/Jakarta", agg: ["increase"] }
 ```
 
-For six months this returns six months; the same query with a one-month range returns weeks, with a week returns days, with a day returns hours (`bucket: "month"` and so on to force one). The months are real months of Jakarta, and the consumption of a month that contains a meter reset is right. The same query on the power signal, `tags: "Meter1.kW", agg: ["integral"], per: "h"`, gives kWh per bucket from kW. Both are answered from the summaries: about 10 ms for six months of a tag at 1 Hz.
+Here `Meter3.kWh` rises by 1 every hour. The answer for six months is six calendar months of Jakarta:
 
-**A line chart**
+```js
+{ type: "number", bucket: "month", tz: "Asia/Jakarta",
+  t:        [1767200400000, 1769878800000, 1772298000000, 1774976400000, 1777568400000, 1780246800000],
+            // 2025-12-31T17:00Z = 2026-01-01 00:00 in Jakarta, then Feb 1, Mar 1, Apr 1, May 1, Jun 1
+  increase: [744, 672, 744, 720, 744, 720] }       // the hours of January ... June
+```
+
+The same query with other ranges:
+
+| Range | `bucket` chosen | Answer |
+|---|---|---|
+| `2026-03-01` to `2026-04-01` (a month) | `"week"` | `increase: [24, 168, 168, 168, 168, 48]`: six Monday weeks, the first and last cut to the range |
+| `2026-03-02` to `2026-03-09` (a week) | `"day"` | `increase: [24, 24, 24, 24, 24, 24, 24]` |
+| `2026-03-02` to `2026-03-03` (a day) | `"hour"` | 24 values, each `1` |
+
+The same query on a power signal, `tags: "Meter1.kW", agg: ["integral"], per: "h"`, gives kWh per bucket from kW. Both are answered from the summaries: about 10 ms for six months of a tag at 1 Hz.
+
+### A line chart
 
 ```js
 // 1 200 columns over 8 hours: one bucket per column (8 h / 1 200 = 24 s), with the four values a line needs
@@ -456,6 +561,7 @@ npm run soak:gen && npm run soak:verify   # 5 years of data, random queries agai
 | `robust.test.js` | Time 0 and 1970, wrong clocks, NaN, the folder lock, `clippedFrom`, the store node under overload |
 | `chunking.test.js` | Young chunks held in the WAL, cut by size, age and segment end; a crash with them open |
 | `compact.test.js` | Lazy index trimming, a crash in the middle, the retention time budget |
+| `batch.test.js` | Batches: order, one failing query among others, one `now`, the size limits, through the worker and the node |
 | `calendar.test.js` | Day, week, month, quarter and year edges in Jakarta, Kolkata, New York (daylight saving) and London; increase, delta, integral and counts over those buckets against a brute force; the buckets of a range add up to the range; `auto`; dates read in a zone |
 | `rollup.test.js` | `delta`, `increase`, `integral`, `twa`, state aggregates and `range` against a brute force over random meters with resets, plateaus, zeros and gaps, through raw, chunk, hour and day levels, checkpoints, reopens and crashes; every counter option; hostile parameters |
 | `fuzz.test.js` | Hostile input to `write()` and `query()`; raw and bucket against a model through random checkpoints, reopens and crashes |

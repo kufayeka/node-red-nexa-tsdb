@@ -194,6 +194,7 @@
         <dt class="optional">query <span class="property-type">object</span></dt>
         <dd><code>{ tags, from, to, mode, bucket, offset, tz, weekStart, minBuckets, endExclusive, agg, fill, limit, page, maxPoints, format }</code>, and the options of the aggregates (<code>value</code>, <code>per</code>, <code>method</code>, <code>reset</code>, <code>ignoreZero</code> ...: see the README). A raw answer past <code>limit</code> is an error (never returned cut); <code>page: true</code> returns pages <code>{ t, v, more, next }</code>: ask the next with <code>from: next</code>. Damaged stored data is an error naming its place, never a wrong value. Times: <code>-8h</code>, <code>now-30m</code>, ISO, ms. Durations: <code>500ms 30s 5m 1h 7d</code>. Tags: names, <code>*</code> matches any text.</dd>
         <dt class="optional">topic <span class="property-type">string</span></dt><dd>The tag, when the query has none.</dd>
+        <dt class="optional">query <span class="property-type">array</span></dt><dd>A <b>batch</b>: an array of queries in one call (up to 1000). <code>msg.payload</code> is then an array, in the same order, of <code>{ ok: true, result }</code> or <code>{ ok: false, error }</code>: one that fails does not stop the others. They see the same data.</dd>
     </dl>
     <h3>Outputs</h3>
     <dl class="message-properties">
