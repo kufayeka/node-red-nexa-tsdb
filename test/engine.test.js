@@ -6,7 +6,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Engine } = require('../lib/engine');
+const { Engine, RECB } = require('../lib/engine');
 const Q = require('../lib/query');
 
 let passed = 0;
@@ -142,7 +142,7 @@ ok('a crash mid write: a torn chunk in a segment and a torn index record are cut
     const e2 = open(d);
     const r = Q.run(e2, { tags: 'B', from: T0, to: T0 + DAY, mode: 'raw' }).B;
     assert.strictEqual(r.t.length, 3000);
-    assert.strictEqual(fs.statSync(path.join(d, 'idx', '0.r0')).size % 96, 0);
+    assert.strictEqual(fs.statSync(path.join(d, 'idx', '0.r0')).size % RECB, 0);
     e2.close();
 });
 

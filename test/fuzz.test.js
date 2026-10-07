@@ -51,11 +51,13 @@ ok('query() with hostile objects answers or refuses with a reason - never an int
     for (let i = 0; i < 3000; i++) { e.write('Num', t0 + i * 1000, i % 50); e.write('Str', t0 + i * 1000, 'm' + (i % 4)); e.write('Bool', t0 + i * 1000, i % 2 === 0); }
     e.checkpoint();
     const odd = [undefined, null, 0, -1, 1, 0.5, NaN, Infinity, -Infinity, 1e300, '', ' ', 'abc', '-1h', 'now', 'now-1h', '-9999y', '2026-13-45', '1h', '0s', '-5m', [], {}, [[]], true, false, 'Num', ['Num', 'Str'], '*', '*N*', ['', null, 5], '\\', '(', '[a-', 'a**b', 'm4', 'raw', 'bucket', 'last', 'nope', 12, '1ms', '1y', Date.now(), t0, new Date(t0)];
-    const keys = ['tags', 'from', 'to', 'mode', 'width', 'bucket', 'offset', 'agg', 'fill', 'format', 'limit', 'maxPoints', 'page', 'exact'];
+    const keys = ['tags', 'from', 'to', 'mode', 'width', 'bucket', 'offset', 'agg', 'fill', 'format', 'limit', 'maxPoints', 'page', 'exact', 'anchor', 'reverse', 'method', 'per', 'reset', 'tolerance', 'maxStep', 'ignoreZero', 'maxGap', 'value'];
+    const goodAggs = [['avg'], ['delta'], ['increase', 'delta'], ['integral', 'twa'], ['range', 'min', 'max'], ['occurrences', 'entries', 'duration'], ['counts', 'durations', 'changes'], ['avg', 'integral', 'increase', 'counts']];
     let answered = 0, refused = 0;
     for (let i = 0; i < 4000; i++) {
         const q = {}; for (const k of keys) if (rnd() < 0.55) q[k] = pick(odd);
         if (rnd() < 0.7) q.tags = pick(['Num', 'Str', 'Bool', ['Num', 'Str', 'Bool'], 'N*', '*']);
+        if (rnd() < 0.5) { q.agg = pick(goodAggs); if (rnd() < 0.7) q.mode = pick(['bucket', 'range']); if (rnd() < 0.6) q.value = pick(['m1', 'm9', true, false, 3, 'x']); }
         const t = Date.now(), show = () => JSON.stringify(q, (k, v) => (typeof v === 'number' && !Number.isFinite(v) ? String(v) : v));
         try { const r = Q.run(e, q); answered++; JSON.stringify(r); } catch (x) {
             refused++;

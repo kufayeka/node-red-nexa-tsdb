@@ -4,7 +4,7 @@
   "description": "Historian core for Node-RED: ts, tag, value (number, bool, string) with Gorilla compression and an M4 / OM3 summary pyramid; fast charts and aggregates over any range, on the edge, no database server.",
   "main": "lib/engine.js",
   "scripts": {
-    "test": "node test/gorilla.test.js && node test/engine.test.js && node test/worker.test.js && node test/admin.test.js && node test/integrity.test.js && node test/robust.test.js && node test/chunking.test.js && node test/compact.test.js && node test/fuzz.test.js --rounds 20 && node test/restart.test.js && node test/nodes.test.js && node test/fault.test.js --rounds 6 && node test/fault.test.js --rounds 4 --soft 1",
+    "test": "node test/gorilla.test.js && node test/engine.test.js && node test/worker.test.js && node test/admin.test.js && node test/integrity.test.js && node test/robust.test.js && node test/chunking.test.js && node test/compact.test.js && node test/rollup.test.js && node test/fuzz.test.js --rounds 20 && node test/restart.test.js && node test/nodes.test.js && node test/fault.test.js --rounds 6 && node test/fault.test.js --rounds 4 --soft 1",
     "bench": "node bench/bench.js",
     "stress": "node test/stress.js --tags 2000 --seconds 60 --kills 10",
     "fuzz": "node test/fuzz.test.js --rounds 200 --seed $RANDOM",
