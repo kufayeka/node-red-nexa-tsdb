@@ -59,6 +59,8 @@ A tag's store is set when it is created; its keep follows the rules of each star
 - A range that starts before retention (`rawDays`, or a rule's `keep` / `raw`) is answered from what is kept, and the answer says so: `clippedFrom` on the tag's series.
 - Disk use is about **2 - 4 bytes a point** for 2-decimal process data written at 1 Hz with the default 60 s checkpoint (a chunk per tag per checkpoint is ~60 points, and its summary is 96 bytes): the 1.2 bytes above is a full 1 024-point chunk. A longer `checkpointMs` makes bigger chunks (and a longer WAL replay after a crash).
 
+- **Index retention is lazy and spread out:** an index file is rewritten only once a quarter of it is expired (streamed, fsynced, renamed), not daily, and the worker's hourly pass has a 1 s budget and carries on tag after tag. A year of 1 Hz summaries is 50 MB a tag; rewriting it daily was 55 GB written a year a tag, now about 0.13 GB. The records that wait are never returned (a query stops at a tag's `keep`); they are only not yet reclaimed.
+
 ## Diagnostics
 
 `{ op: "diagnose", tags?: "Line1.*", problems?: true }` → per tag, problems first:
