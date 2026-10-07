@@ -194,7 +194,7 @@
     <h3>Inputs</h3>
     <dl class="message-properties">
         <dt class="optional">query <span class="property-type">object</span></dt>
-        <dd><code>{ tags, from, to, mode, width, bucket, offset, agg, fill, limit, format }</code>. Times: <code>-8h</code>, <code>now-30m</code>, ISO, ms. Durations: <code>500ms 30s 5m 1h 7d</code>. Tags: names, <code>*</code> matches any text.</dd>
+        <dd><code>{ tags, from, to, mode, width, exact, bucket, offset, agg, fill, limit, page, maxPoints, format }</code>. A raw answer past <code>limit</code> is an error (never returned cut); <code>page: true</code> returns pages <code>{ t, v, more, next }</code>: ask the next with <code>from: next</code>. Damaged stored data is an error naming its place, never a wrong value. Times: <code>-8h</code>, <code>now-30m</code>, ISO, ms. Durations: <code>500ms 30s 5m 1h 7d</code>. Tags: names, <code>*</code> matches any text.</dd>
         <dt class="optional">topic <span class="property-type">string</span></dt><dd>The tag, when the query has none.</dd>
     </dl>
     <h3>Outputs</h3>
@@ -230,7 +230,7 @@
 <script type="text/html" data-template-name="tsdb-admin">
     <div class="form-row"><label for="node-input-db"><i class="fa fa-database"></i> Historian</label><input type="text" id="node-input-db"></div>
     <div class="form-row"><label for="node-input-op"><i class="fa fa-wrench"></i> Default op</label>
-        <select id="node-input-op"><option value="stats">stats</option><option value="tags">tags</option><option value="compact">compact</option></select>
+        <select id="node-input-op"><option value="stats">stats</option><option value="tags">tags</option><option value="verify">verify (checks every chunk and summary)</option><option value="compact">compact</option></select>
         <span style="opacity:.7">(a delete is always sent in msg.payload)</span></div>
     <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-input-name"></div>
 </script>
@@ -244,6 +244,7 @@
             <code>{ "op": "deleteRange", "tags": ["Oven*"], "from": "-2h", "to": "-1h" }</code> deletes the points in a range; the hour / day summaries are rebuilt.<br>
             <code>{ "op": "dropAll", "confirm": "DROP ALL" }</code> deletes every tag and point.<br>
             <code>{ "op": "compact" }</code> reclaims the bytes of dropped tags and replaced chunks.<br>
+            <code>{ "op": "verify" }</code> reads every chunk (checksum, then its points against its summary) and recomputes the hour / day summaries: <code>{ ok, chunks, points, damagedChunks, problems: [...] }</code>; <code>{ "op": "verify", "repair": true }</code> drops the damaged chunks from the index and rebuilds the summaries (the database answers again, without the damaged part, which is reported).<br>
             <code>{ "op": "tags", "tags": "Line1.*" }</code>, <code>{ "op": "stats" }</code>.
         </dd>
         <dt class="optional">dryRun <span class="property-type">boolean</span></dt><dd>In the request: what it would delete, nothing changed.</dd>

@@ -92,6 +92,26 @@ async function stall(fn) {
         await h2.close();
     });
 
+    await ok('an I/O error in the worker: it restarts the engine (recovery from the WAL), batches wait, nothing acknowledged is lost, writes carry on', async () => {
+        const d = tmp(), h = openHistorian(d, { walSync: true, walFlushMs: 50, batchMs: 10, workerEnv: { TSDB_TEST_FAULT: 'flushWal:6' } });
+        await h.ready;
+        const errors = []; h.onError = (e) => errors.push(e.message);
+        const N = 6000;
+        for (let k = 0; k < N; k++) { while (!h.write('E1', T0 + k * 1000, k)) await wait(5); if (k % 3 === 0) { while (!h.write('E2', T0 + k * 1000, 'state' + (k % 4))) await wait(5); } if (k % 400 === 0) await wait(30); }
+        await wait(1500);
+        assert.ok(errors.some((m) => /restarting the historian/.test(m)), 'the error was reported: ' + JSON.stringify(errors));
+        assert.ok(h.stats.restarts >= 1 && h.recoveries >= 1, 'restarted and recovered: ' + h.stats.restarts + ' / ' + h.recoveries);
+        await h.checkpoint();
+        const r = await h.query({ tags: ['E1', 'E2'], from: T0, to: T0 + N * 1000, mode: 'raw' });
+        assert.strictEqual(r.E1.t.length, N, 'every point of E1');
+        assert.ok(r.E1.v.every((v, i) => v === i && r.E1.t[i] === T0 + i * 1000));
+        assert.strictEqual(r.E2.t.length, N / 3, 'every point of E2');
+        assert.ok(r.E2.v.every((v, i) => v === 'state' + ((i * 3) % 4)));
+        const v = await h.admin({ op: 'verify' });
+        assert.ok(v.ok, 'the database is clean: ' + JSON.stringify(v.problems.slice(0, 2)));
+        await h.close();
+    });
+
     await ok('closed: a write is refused, a query rejects; a bad query rejects with its reason', async () => {
         await assert.rejects(db.query({ tags: 'Big', mode: 'nope' }), /unknown mode/);
         await db.close();

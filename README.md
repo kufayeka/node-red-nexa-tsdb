@@ -57,6 +57,17 @@ A tag's store is set when it is created; its keep follows the rules of each star
 `{ tag, type, store, written, overwritten, late, badType, refused, lastRefused: { ts, lastTs, reason, value, at }, lastTs, lastWriteAgoMs, inMemory }`.
 `{ op: "stats" }` has the totals and the database's last refusal; the store node's status shows it (`... refused - last: Oven1.Temp older than the last point (...)`).
 
+## Integrity: never a wrong value without saying so
+
+- **A cut answer is never returned as whole.** A `raw` query with more points than `limit` (1 000 000) is an **error** that says so; `page: true` returns exact pages `{ t, v, more, next }` and the next page is `from: next` (a full-range export in pages, checked: every row, once, exact).
+- **Every chunk has a checksum** (CRC32 over its header and body, format TSC2); every read checks it, and checks the decoded points against the chunk's summary record. Chunks written before the checksums (TSC1) still read, and are checked against their summary only.
+- **Damaged data is an error that names its place** (`corrupt data: tag ..., segment ..., offset ...`, code `ETSDB_CORRUPT`); a flipped bit anywhere in a chunk was caught in all 60 random flips of the test. The index files (level 0, 1, 2) must be valid and in time order for a query to use them.
+- **`{ op: "verify" }`** reads every chunk and recomputes the hour and day summaries: `{ ok, chunks, points, damagedChunks, indexProblems, summaryProblems, problems }` (a 15.5 M-point database in 4 s). **`{ op: "verify", repair: true }`** drops the damaged chunks from the index and rebuilds the summaries: the database answers again, without the damaged part, which is reported (the bytes go at the next `compact`; `compact` refuses to run over a damaged chunk). `dryRun: true` only reports.
+- **What a power cut leaves is cleaned on open:** a zero-filled or torn tail of an index file or of the last segment is cut; bytes after the last chunk that are *not* zeros are left alone and counted (`unreadableBytes`), never cut away.
+- **An I/O error (disk full, a failed fsync, a write that lands in part) is handled as a crash is:** the worker stops the engine without writing anything, opens it again (recovery from the WAL), plays into it the points that were written but not yet in the WAL, and carries on. Batches wait meanwhile (the client refuses writes past `maxInFlight`, so a long outage cannot grow memory); queries are answered with the reason; if it cannot open (still no space) it retries with a growing delay and reports each try. The store node's status shows `restarting after an I/O error` and `DAMAGED chunk(s): run verify`.
+
+Proven by `npm test` (`test/integrity.test.js`: bit flips, TSC1 data, torn and zero tails, verify / repair, paging; `test/fault.test.js`: a writer whose file system fails at random for 30 rounds, 765 restarts after injected errors, 30 `kill -9`, checked after every round: nothing wrong, nothing durable lost, the index agrees with the chunks) and by the soak test below.
+
 ## Deleting
 
 ```js
@@ -159,6 +170,22 @@ The engine alone (`npm run bench`):
 Opening the 5-year database: about 1 s. **What is slow, and why:** a bucket finer than an hour (or on a half-hour offset) over years has to decode raw chunks, and a slow tag keeps one small chunk per hourly file: 73 % of the time is `open` / `read` / `close` (one tag, 1 year, 15-min buckets: 0.8 s; 4 years: 2.8 s; 3 tags, 4 years: ~10 s). Anything answered from the summaries (hour, shift, day, week, month aggregates; charts) stays in milliseconds. The structural fix (day files for slow data, decoupled from the hourly summaries) is not done.
 
 Found by running it, and fixed: `EMFILE` (a query kept every hourly segment it touched open: now an LRU of 32), `last` with a past `to`, a 3-4 s open (a `stat` of all 43 800 segments: now only the last two), a 14 s raw query (an open + close per chunk), M4 columns 42 - 82 % exact (now exact by default). On a machine whose pagefile is full (here: `explorer.exe` held 14.6 GB of commit) allocations fail whatever the engine does; a result larger than `maxPoints` is refused with its reason.
+
+## Production readiness (what is proven, what is not)
+
+**Proven (with the tests above):**
+- Exact rows and aggregates: random tags, random ranges over 5 years (262 M points) in raw, bucket, M4 (exact) and last, against a model that recomputes the answer: no difference; random ranges are what a chart, a report and an export do.
+- A crash anywhere (`kill -9` of the whole process, repeated: 11 - 12 times in a soak run; I/O errors injected into every write, fsync and rename; torn and zero-filled tails) loses nothing that was flushed (WAL every `walFlushMs`, 1 s by default: a crash loses at most that), duplicates nothing, and leaves the index and the chunks in agreement (`verify` clean).
+- Damage is detected, named, and can be repaired without taking the rest down.
+
+**Not proven / not built (decide before relying on it as the only copy of the data):**
+- **Late and out-of-order data is refused** (counted, with the last example in the diagnostics): no backfill, so store-and-forward from a device that reconnects, or a clock that steps back, loses those points. Live data stamped now is fine.
+- **A real power cut** (a disk that lies about fsync, a cache that is lost) is simulated by torn and zero-filled tails and by kill -9, not tested on hardware. A UPS and a disk with power-loss protection are still the right answer for the data that must not be lost.
+- **No online backup / replication.** Copy the folder while the database is stopped (or from a snapshot); `{ op: "checkpoint" }` first.
+- **One worker per database:** under a flood of writes, queries queue behind them; a very large query holds the worker (it is refused past `maxPoints`).
+- **Not run for days:** the longest runs are minutes; memory and file handle use stayed flat in them (and handles are bounded by design), but a multi-day soak is the next test.
+- **Only Windows / x64 measured** (Node 24). A Linux ARM edge box is likely faster at file opens and slower at CPU; not measured.
+- Reporting helpers are not built yet: time zone, calendar months, `increase` / `integral` aggregates (a counter's difference, kW -> kWh).
 
 ## Limits of this MVP (next steps)
 
