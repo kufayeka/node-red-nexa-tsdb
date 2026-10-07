@@ -220,4 +220,15 @@ ok('a backfill across many hours keeps only a few segment files open (no "too ma
     e2.close();
 });
 
+ok('last with a `to` in the past and no `from`: the newest point at or before it (a bug the soak test found)', () => {
+    const d = tmp(), e = open(d), t = Date.now() - 10 * DAY;
+    for (let i = 0; i < 100; i++) e.write('L', t + i * 1000, i);
+    e.checkpoint();
+    const r = (to) => Q.run(e, { tags: 'L', mode: 'last', to }).L;
+    assert.deepStrictEqual([r(t + 50500).t[0], r(t + 50500).v[0]], [t + 50000, 50], 'a time in the middle, long ago');
+    assert.deepStrictEqual(r(t - 1).t, [], 'before the first point: nothing');
+    assert.strictEqual(r('now').v[0], 99, 'now: the newest');
+    e.close();
+});
+
 console.log(`\n${passed} passed\nALL OK`);

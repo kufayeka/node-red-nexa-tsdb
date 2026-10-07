@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node test/gorilla.test.js && node test/engine.test.js && node test/worker.test.js && node test/admin.test.js && node test/nodes.test.js",
     "bench": "node bench/bench.js",
-    "stress": "node test/stress.js --tags 2000 --seconds 60 --kills 10"
+    "stress": "node test/stress.js --tags 2000 --seconds 60 --kills 10",
+    "soak:gen": "node test/soak/gen.js",
+    "soak:verify": "node test/soak/verify.js"
   },
   "node-red": {
     "version": ">=4.0.0",
