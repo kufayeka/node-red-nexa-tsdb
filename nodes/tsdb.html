@@ -145,6 +145,7 @@
             mode: { value: 'bucket' },
             bucket: { value: '1h' },
             offset: { value: '' },
+            tz: { value: '' },
             agg: { value: 'avg' },
             fill: { value: 'none' },
             format: { value: 'series' }
@@ -177,7 +178,8 @@
             <option value="raw">Raw points</option>
             <option value="last">Last value</option>
         </select></div>
-    <div class="form-row tsdb-bucket tsdb-bucket-only"><label for="node-input-bucket"><i class="fa fa-th"></i> Bucket</label><input type="text" id="node-input-bucket" style="width:90px"> <label for="node-input-offset" style="width:auto;margin-left:10px">offset</label> <input type="text" id="node-input-offset" style="width:90px" placeholder="6h"></div>
+    <div class="form-row tsdb-bucket tsdb-bucket-only"><label for="node-input-bucket"><i class="fa fa-th"></i> Bucket</label><input type="text" id="node-input-bucket" style="width:90px" placeholder="1h, day, week, month, auto"> <label for="node-input-offset" style="width:auto;margin-left:10px">offset</label> <input type="text" id="node-input-offset" style="width:90px" placeholder="6h"></div>
+    <div class="form-row tsdb-bucket"><label for="node-input-tz"><i class="fa fa-globe"></i> Time zone</label><input type="text" id="node-input-tz" placeholder="Asia/Jakarta (empty: UTC)"></div>
     <div class="form-row tsdb-bucket"><label for="node-input-agg"><i class="fa fa-calculator"></i> Aggregates</label><input type="text" id="node-input-agg"></div>
     <div class="form-row tsdb-bucket"><label for="node-input-fill"><i class="fa fa-ellipsis-h"></i> Empty</label>
         <select id="node-input-fill"><option value="none">Skipped</option><option value="null">null</option><option value="previous">The previous bucket</option></select></div>
@@ -190,7 +192,7 @@
     <h3>Inputs</h3>
     <dl class="message-properties">
         <dt class="optional">query <span class="property-type">object</span></dt>
-        <dd><code>{ tags, from, to, mode, bucket, offset, agg, fill, limit, page, maxPoints, format }</code>, and the options of the aggregates (<code>value</code>, <code>per</code>, <code>method</code>, <code>reset</code>, <code>ignoreZero</code> ...: see the README). A raw answer past <code>limit</code> is an error (never returned cut); <code>page: true</code> returns pages <code>{ t, v, more, next }</code>: ask the next with <code>from: next</code>. Damaged stored data is an error naming its place, never a wrong value. Times: <code>-8h</code>, <code>now-30m</code>, ISO, ms. Durations: <code>500ms 30s 5m 1h 7d</code>. Tags: names, <code>*</code> matches any text.</dd>
+        <dd><code>{ tags, from, to, mode, bucket, offset, tz, weekStart, minBuckets, endExclusive, agg, fill, limit, page, maxPoints, format }</code>, and the options of the aggregates (<code>value</code>, <code>per</code>, <code>method</code>, <code>reset</code>, <code>ignoreZero</code> ...: see the README). A raw answer past <code>limit</code> is an error (never returned cut); <code>page: true</code> returns pages <code>{ t, v, more, next }</code>: ask the next with <code>from: next</code>. Damaged stored data is an error naming its place, never a wrong value. Times: <code>-8h</code>, <code>now-30m</code>, ISO, ms. Durations: <code>500ms 30s 5m 1h 7d</code>. Tags: names, <code>*</code> matches any text.</dd>
         <dt class="optional">topic <span class="property-type">string</span></dt><dd>The tag, when the query has none.</dd>
     </dl>
     <h3>Outputs</h3>
@@ -200,7 +202,7 @@
     </dl>
     <h3>Modes</h3>
     <ul>
-        <li><b>Buckets</b>: the aggregates per interval: avg / min / max / sum / count / first / last / range, delta, increase (a counter that resets), integral and twa (kW to kWh), and for states occurrences / entries / duration / changes / counts / durations (offset: a shift starting at 06:00 is <code>6h</code>).</li>
+        <li><b>Buckets</b>: the aggregates per interval: avg / min / max / sum / count / first / last / range, delta, increase (a counter that resets), integral and twa (kW to kWh), and for states occurrences / entries / duration / changes / counts / durations The bucket is a size (<code>15m</code>, <code>1h</code>, UTC aligned; <code>offset</code> moves the start), a calendar unit of the time zone (<code>day</code>, <code>week</code>, <code>month</code>, <code>quarter</code>, <code>year</code>) or <code>auto</code> (months for 6 months, weeks for a month, days for a week, hours for a day).</li>
         <li><b>Range</b>: the same aggregates over the whole From - To as one row (for example the consumption between two times).</li>
         <li><b>Raw</b>: every point (limit 1 000 000 a tag). <b>Last</b>: the newest value.</li>
     </ul>

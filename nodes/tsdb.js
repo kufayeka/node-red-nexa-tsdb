@@ -99,7 +99,7 @@ module.exports = function (RED) {
         const node = this, db = RED.nodes.getNode(n.db);
         const list = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
         const own = { tags: list(n.tags), from: n.from || '-1h', to: n.to || 'now', mode: n.mode || 'bucket',
-            bucket: n.bucket || '1h', offset: n.offset || undefined, agg: list(n.agg).length ? list(n.agg) : ['avg'], fill: n.fill || 'none', format: n.format || 'series' };
+            bucket: n.bucket || '1h', offset: n.offset || undefined, tz: n.tz || undefined, agg: list(n.agg).length ? list(n.agg) : ['avg'], fill: n.fill || 'none', format: n.format || 'series' };
         node.on('input', function (msg, send, done) {
             if (!db || !db.engine) { done(new Error('no historian (check the database node)')); return; }
             try {

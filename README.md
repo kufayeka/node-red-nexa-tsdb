@@ -155,7 +155,8 @@ A query is one object (the **tsdb-query** node's form builds the same object; `m
 { tags: ["Oven1.Temp", "Line1.*.Speed"],   // * matches any text
   from: "-8h", to: "now",                  // relative ("now-30m"), ISO text, or epoch ms
   mode: "bucket",                          // bucket (default) | range | raw | last
-  bucket: "1h", offset: "6h",              // bucket: its size, and where it starts
+  bucket: "1h", offset: "6h",              // bucket: a size, a calendar unit (day, week, month ...) or "auto"
+  tz: "Asia/Jakarta",                      // the time zone of calendar buckets and of dates without a zone
   agg: ["avg", "max", "increase"],         // see the table below
   fill: "none",                            // bucket: none | null | previous (what an empty bucket gives)
   format: "series" }                       // series | rows
@@ -170,7 +171,22 @@ A query is one object (the **tsdb-query** node's form builds the same object; `m
 | `raw` | The stored points. | Export. A cut answer is an error; use `page: true` for pages. |
 | `last` | The newest point at or before `to`, however old. | Current value. |
 
-Buckets are aligned to UTC: `bucket: "1d"` starts at 00:00 UTC. `offset` moves the start: `offset: "6h"` makes the buckets start at 06:00 UTC (a shift), and for a day that starts at 00:00 local time in UTC+7 use `offset: "17h"`.
+### Buckets
+
+The `bucket` of a `bucket` query is one of three kinds:
+
+| `bucket` | Meaning |
+|---|---|
+| a size: `"15m"`, `"1h"`, `"1d"`, `900000` | Fixed buckets of that length, aligned to UTC (`"1d"` starts at 00:00 UTC). `offset` moves the start: `offset: "6h"` makes shifts start at 06:00 UTC. `"1w"` and `"1mo"` are 7 and 30 days, not calendar weeks and months. |
+| a calendar unit: `"day"`, `"week"`, `"month"`, `"quarter"`, `"year"` | **Calendar buckets of the time zone `tz`**: a month is the real month (28 to 31 days), a day starts at local midnight (23 or 25 hours when daylight saving changes), a week starts on Monday (`weekStart: "sun"` or another day to change). Use these for reports: *the consumption of each month*. |
+| `"hour"`, `"minute"`, `"second"` | Fixed buckets aligned to the clock of `tz` (matters for zones with a half-hour offset such as `Asia/Kolkata`). |
+| `"auto"` | The coarsest unit that still gives at least `minBuckets` (default 4) buckets over the range: **a range of 6 months gives months, a month gives weeks, a week gives days, a day gives hours**, then minutes and seconds. For a dashboard that has a date range picker. The unit it chose is in the answer (`bucket: "month"`). `minBuckets: 1` accepts one bucket (a one-week range then gives a week). |
+
+**Time zone.** `tz` is an IANA name (`Asia/Jakarta`, `America/New_York`, `UTC`; the default is UTC). It sets the calendar buckets, and it is how a date without a zone is read: with `tz: "Asia/Jakarta"`, `from: "2026-01-01"` is 2026-01-01 00:00 in Jakarta (2025-12-31T17:00Z). A text with an offset or `Z` (`"2026-01-01T00:00:00+07:00"`) is exact whatever `tz` says.
+
+**The end of the range.** `to` is inclusive. For "the first six months", `to: "2026-07-01"` would also take a point at exactly 00:00 on July 1 and make a seventh bucket. Say `endExclusive: true`: `to` is then the first instant *not* wanted. The first and last bucket are cut to `[from, to]`: if the range does not start on a boundary, its first bucket holds only what is inside the range.
+
+**Calendar buckets across edges.** The integral and the increase are split exactly at the edges (the line between two readings is cut where it crosses midnight or the end of the month), so the buckets of a range always add up to the whole range. The limit is 100 000 calendar buckets in one query.
 
 ### Aggregates
 
@@ -297,6 +313,15 @@ Add `maxStep: 500` to also drop any single step bigger than 500 kWh, and `tolera
 ```
 
 Divide the milliseconds by 3 600 000 for hours.
+
+**Energy per month, week, day or hour: one query for a date range picker**
+
+```js
+{ tags: "Meter1.kWh", from: "2026-01-01", to: "2026-07-01", endExclusive: true,
+  mode: "bucket", bucket: "auto", tz: "Asia/Jakarta", agg: ["increase"] }
+```
+
+For six months this returns six months; the same query with a one-month range returns weeks, with a week returns days, with a day returns hours (`bucket: "month"` and so on to force one). The months are real months of Jakarta, and the consumption of a month that contains a meter reset is right. The same query on the power signal, `tags: "Meter1.kW", agg: ["integral"], per: "h"`, gives kWh per bucket from kW. Both are answered from the summaries: about 10 ms for six months of a tag at 1 Hz.
 
 **A line chart**
 
@@ -431,6 +456,7 @@ npm run soak:gen && npm run soak:verify   # 5 years of data, random queries agai
 | `robust.test.js` | Time 0 and 1970, wrong clocks, NaN, the folder lock, `clippedFrom`, the store node under overload |
 | `chunking.test.js` | Young chunks held in the WAL, cut by size, age and segment end; a crash with them open |
 | `compact.test.js` | Lazy index trimming, a crash in the middle, the retention time budget |
+| `calendar.test.js` | Day, week, month, quarter and year edges in Jakarta, Kolkata, New York (daylight saving) and London; increase, delta, integral and counts over those buckets against a brute force; the buckets of a range add up to the range; `auto`; dates read in a zone |
 | `rollup.test.js` | `delta`, `increase`, `integral`, `twa`, state aggregates and `range` against a brute force over random meters with resets, plateaus, zeros and gaps, through raw, chunk, hour and day levels, checkpoints, reopens and crashes; every counter option; hostile parameters |
 | `fuzz.test.js` | Hostile input to `write()` and `query()`; raw and bucket against a model through random checkpoints, reopens and crashes |
 | `restart.test.js` | 300 open / write / stop cycles, 12 `SIGKILL`s of a real writer, 25 worker cycles; open time, file handles, WAL files and heap stay flat |
@@ -480,6 +506,17 @@ Measured on a Linux virtual machine, Node 22, warm OS cache, data written throug
 | `integral` per hour | 2 ms |
 | `increase` per 10 minutes (decodes the 600 chunks that straddle a bucket edge) | 52 ms |
 
+**Energy over calendar buckets** (a kWh counter that resets every 30 days, and the kW it was made from; 1 Hz, 6.5 months, 34 million points; `tz: "Asia/Jakarta"`, `bucket: "auto"`)
+
+| Query | Time |
+|---|---|
+| `increase` of the counter over 6 months: 6 calendar months | 13 ms |
+| `integral` (kWh) of the kW over the same 6 months | 6 ms |
+| Over one month: weeks / one week: days / one day: hours | under 1 ms each |
+| `increase` and `delta` between two dates (`mode: "range"`, 3 months) | 4 ms |
+
+The per-month kWh from the counter (`increase`) and from the power signal (`integral`) agreed to the unit in this run.
+
 **Writing**
 
 | | |
@@ -515,7 +552,7 @@ Measured on a Linux virtual machine, Node 22, warm OS cache, data written throug
 - **No online backup or replication.** Copy the folder while the database is stopped, or from a snapshot, after `{ op: "checkpoint" }`.
 - **Power loss on real hardware is not tested.** It is simulated with torn and zero-filled tails and `kill -9`. A disk that lies about fsync can still lose data.
 - **No multi-day run has been done.** The longest runs are minutes; memory and file handle use stayed flat in them. A multi-day soak on the target hardware should come before relying on it as the only copy of the data.
-- **Aggregates and time zones.** Buckets align to UTC; use `offset` for a local start. Calendar months and daylight saving are not built in. Standard deviation and percentiles are not available.
+- **Aggregates.** Standard deviation and percentiles are not available (they cannot be answered from summaries). Fixed buckets given as a size (`"1d"`) are UTC; use the calendar units with `tz` for local days, weeks and months.
 - **The on-disk format of 0.x versions may change without a migration.** A database made by an older development build has to be recreated.
 - Planned: an index journal for 100 000 tags, one writer plus several readers, time-budgeted queries, a fluent query builder.
 
