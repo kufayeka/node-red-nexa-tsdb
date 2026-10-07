@@ -67,6 +67,25 @@ const close = (node) => new Promise((res) => (node._h.close.length ? node._h.clo
         assert.deepStrictEqual(q2.sent[0].payload['L1.Speed'].v, [120, 125]);
         await close(db);
     });
+    await ok('admin: a dry run, a drop, a broad pattern refused; storage rules from the config (a memory tag)', async () => {
+        db = make('tsdb-config', { id: 'db1', name: 'plant' });
+        await db.engine.ready;
+        const adm = make('tsdb-admin', { db: 'db1', op: 'stats' });
+        await input(adm, {});
+        assert.strictEqual(adm.sent[0].payload.op, 'stats');
+        await input(adm, { payload: { op: 'dropTag', tags: 'L1.M*', dryRun: true } });
+        assert.deepStrictEqual(adm.sent[1].payload.tags, ['L1.Mode']);
+        await input(adm, { payload: { op: 'dropTag', tags: 'L1.Mode' } });
+        assert.ok(!(await db.engine.tags()).some((t) => t.name === 'L1.Mode'));
+        const err = await input(adm, { payload: { op: 'dropAll' } });
+        assert.ok(err && /DROP ALL/.test(err.message));
+        const mdb = make('tsdb-config', { id: 'db2', name: 'mem', rules: '[{"pattern":"Vib.*","store":"memory","keep":"10s"}]' });
+        await mdb.engine.ready;
+        mdb.engine.write('Vib.X', Date.now(), 1);
+        assert.deepStrictEqual((await mdb.engine.tags()).map((t) => t.store), ['memory']);
+        await close(mdb);
+        await close(db);
+    });
     await close(store);
     fs.rmSync(userDir, { recursive: true, force: true });
     console.log(`\n${passed} passed\nALL OK`);

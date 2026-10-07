@@ -25,12 +25,18 @@ module.exports = function (RED) {
         node.name = n.name || 'historian';
         const base = (RED.settings && RED.settings.userDir) || process.cwd();
         node.dir = n.dir ? path.resolve(base, n.dir) : path.join(base, 'tsdb', node.name.replace(/[^\w.-]+/g, '_'));
+        let rules = n.rules;
+        if (typeof rules === 'string') { try { rules = JSON.parse(rules || '[]'); } catch (e) { node.error('storage rules: not JSON (' + e.message + ')'); rules = []; } }
         node.engine = openHistorian(node.dir, {
             rawDays: num(n.rawDays, 30), indexDays: num(n.indexDays, 365),
-            walFlushMs: num(n.walFlushMs, 1000), checkpointMs: num(n.checkpointMs, 60000)
+            walFlushMs: num(n.walFlushMs, 1000), checkpointMs: num(n.checkpointMs, 60000),
+            rules: Array.isArray(rules) ? rules.filter((r) => r && r.pattern) : []
         });
         node.engine.onError = (e) => node.error('historian ' + node.dir + ': ' + e.message);
-        node.engine.ready.then((m) => node.log('historian open: ' + node.dir + ' (' + m.tags + ' tags' + (m.recovered ? ', ' + m.recovered + ' points recovered' : '') + ')'), () => {});
+        node.engine.ready.then((m) => {
+            node.log('historian open: ' + node.dir + ' (' + m.tags + ' tags' + (m.recovered ? ', ' + m.recovered + ' points recovered' : '') + ')');
+            (m.warnings || []).forEach((w) => node.warn('storage rule ' + w));
+        }, () => {});
         node.on('close', function (done) {
             // the batch, a checkpoint, the worker ends: a redeploy loses nothing
             node.engine.close().then(() => done(), (e) => { node.error('close: ' + e.message); done(); });
@@ -103,4 +109,24 @@ module.exports = function (RED) {
         });
     }
     RED.nodes.registerType('tsdb-query', TsdbQuery);
+
+    // ---- admin: drop tags, delete a range, drop all, compact, list, stats ------------------------------------
+    function TsdbAdmin(n) {
+        RED.nodes.createNode(this, n);
+        const node = this, db = RED.nodes.getNode(n.db);
+        node.on('input', function (msg, send, done) {
+            if (!db || !db.engine) { done(new Error('no historian (check the database node)')); return; }
+            const req = msg.payload && typeof msg.payload === 'object' && !Array.isArray(msg.payload) ? msg.payload : { op: n.op || 'stats' };
+            if (!req.op) req.op = n.op || 'stats';
+            db.engine.admin(req).then((r) => {
+                msg.payload = r;
+                const what = Array.isArray(r) ? r.length + ' tags' : r.dryRun ? 'dry run: ' + (r.tags ? r.tags.length : 0) + ' tags, ' + (r.points || 0) + ' points'
+                    : r.op === 'deleteRange' || r.op === 'dropTag' ? (r.tags.length + ' tags, ' + r.points + ' points deleted') : r.op;
+                node.status({ fill: r.dryRun ? 'blue' : 'green', shape: 'dot', text: what });
+                send(msg);
+                done();
+            }, (e) => { node.status({ fill: 'red', shape: 'ring', text: e.message.slice(0, 60) }); done(e); });
+        });
+    }
+    RED.nodes.registerType('tsdb-admin', TsdbAdmin);
 };

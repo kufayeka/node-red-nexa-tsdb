@@ -31,6 +31,32 @@ const r = await db.query({ tags: 'Oven1.Temp', from: '-8h', width: 1200 });
 | **tsdb-config** | A database: a folder (default `<userDir>/tsdb/<name>`), raw retention, summary retention, WAL sync, checkpoint. |
 | **tsdb-store** | `msg.topic` + `msg.payload` (+ `msg.timestamp`), or `msg.payload` = `[{ tag, ts, value }]`, or `{ tag: value }`. Tag prefix, changes only, deadband. |
 | **tsdb-query** | The node's settings are a query; `msg.query` overrides any field. Output in `msg.payload`. |
+| **tsdb-admin** | `msg.payload` = `{ op: "dropTag" \| "deleteRange" \| "dropAll" \| "compact" \| "tags" \| "stats", ... }`. |
+
+## Storage rules: Disk or RAM, per tag pattern
+
+In the database node, a row per rule; the first whose pattern matches a tag decides (`*` = any text). A tag no rule matches is on Disk, kept for ever (raw points `Raw kept` days).
+
+| Store | keep | |
+|---|---|---|
+| **Disk** | 1 hour or more (empty = for ever); `raw`: how long its raw points are (its summaries outlive them) | A query never returns what is past `keep`. A disk keep under 1 h is raised to 1 h (warned): use RAM for seconds. |
+| **RAM** | any, down to seconds (`10s`); `max`: points at most | A ring in memory: **never on disk** (no SSD / SD wear), **lost on a restart or a redeploy of the database node**. The editor warns on every RAM rule, and again on a long one (about 16 bytes a point: 1 tag at 100 ms for 24 h is about 14 MB). |
+
+A tag's store is set when it is created; its keep follows the rules of each start.
+
+## Deleting
+
+```js
+{ op: "dropTag",     tags: "Test.*" }                                   // tags, their data, their summaries; the name can be used again
+{ op: "deleteRange", tags: ["Oven*"], from: "-2h", to: "-1h" }          // the points in a range; hour / day summaries rebuilt
+{ op: "dropAll",     confirm: "DROP ALL" }
+{ op: "compact" }                                                        // reclaims the bytes of dropped tags and replaced chunks
+{ op: "deleteRange", tags: "Oven*", from: "-2h", to: "-1h", dryRun: true }   // what it would do; nothing changes
+```
+
+- A pattern that is `*` or matches more than 100 tags runs only with `confirm: <the number of tags it matches>`.
+- **Crash safe:** the files a delete changes are written aside and fsynced, one line in `ops.log` commits them, then they are swapped in; a start after a power cut finishes a committed delete and drops an uncommitted one.
+- deleteRange rewrites only the chunks the range touches (the old bytes stay until `compact` or retention). A range whose raw points are past retention loses those summaries whole (`summariesDropped`).
 
 ## The query
 
@@ -97,7 +123,8 @@ The engine alone (`npm run bench`):
 
 ```
 npm test        # Gorilla round trips; the engine against brute force (every pyramid level), crash recovery, retention;
-                # the worker (exact through it, the event loop kept free, a hard kill recovered); the nodes
+                # the worker (exact through it, the event loop kept free, a hard kill recovered);
+                # storage rules and admin (aggregates after a delete equal a brute force, a crash mid delete); the nodes
 npm run bench   # the engine alone: --tags 9000 --points 600 --months 6 --period 1000 --keep
 node bench/worker-bench.js   # through the worker: --tags 9000 --seconds 60 --months 6
 ```

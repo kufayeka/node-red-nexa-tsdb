@@ -4,7 +4,7 @@
   "description": "Historian core for Node-RED: ts, tag, value (number, bool, string) with Gorilla compression and an M4 / OM3 summary pyramid; fast charts and aggregates over any range, on the edge, no database server.",
   "main": "lib/engine.js",
   "scripts": {
-    "test": "node test/gorilla.test.js && node test/engine.test.js && node test/worker.test.js && node test/nodes.test.js",
+    "test": "node test/gorilla.test.js && node test/engine.test.js && node test/worker.test.js && node test/admin.test.js && node test/nodes.test.js",
     "bench": "node bench/bench.js"
   },
   "node-red": {
