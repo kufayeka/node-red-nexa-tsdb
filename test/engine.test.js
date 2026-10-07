@@ -1,12 +1,12 @@
 'use strict';
 // The engine: what is written comes back exact after a reopen; bucket aggregates equal a brute force over the raw
-// points, at every level of the pyramid; M4 keeps every extreme; a crash at any point loses nothing that was in the
+// points, at every level of the pyramid; a crash at any point loses nothing that was in the
 // WAL and duplicates nothing; retention drops raw chunks but the summaries still answer.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Engine } = require('../lib/engine');
+const { Engine, RECB } = require('../lib/engine');
 const Q = require('../lib/query');
 
 let passed = 0;
@@ -17,7 +17,7 @@ const T0 = Math.floor((Date.now() - 3 * DAY) / DAY) * DAY;   // three days ago a
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'tsdb-'));
 const open = (dir, o) => new Engine(dir, Object.assign({ walSync: false, checkpointMs: 1e9, walFlushMs: 1e9 }, o)).open();
 // a crash: the process dies, nothing more is written (what the OS already has stays)
-function crash(e) { e._timers.forEach(clearInterval); if (e.walFd !== null) fs.closeSync(e.walFd); e.segFds.forEach((s) => fs.closeSync(s.fd)); }
+function crash(e) { e._timers.forEach(clearInterval); if (e.walFd !== null) fs.closeSync(e.walFd); e.segFds.forEach((s) => fs.closeSync(s.fd)); e._unlock(); }   // the process is gone: so is its lock
 
 let seed = 7;
 const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
@@ -91,24 +91,6 @@ ok('bucket aggregates equal the brute force: per day (level 2), per hour (level 
     e.close();
 });
 
-ok('M4 for a chart: every column holds its true min and max; 1 200 px over 2.5 days reads summaries, over 20 min the raw points', () => {
-    const e = open(dir);
-    for (const [from, to, width] of [[T0, T0 + 2.5 * DAY, 1200], [T0 + DAY, T0 + DAY + 1200000, 300]]) {
-        const r = Q.run(e, { tags: 'Oven1.Temp', from, to, width })['Oven1.Temp'];
-        assert.ok(r.t.length <= width * 4, 'at most 4 points a column');
-        const size = (to - from + 1) / width, want = brute(ref.temp, from, to, size, from);
-        const got = brute(r.t.map((t, i) => [t, r.v[i]]), from, to, size, from);
-        let exact = 0;
-        want.forEach((w, b) => { const g = got.get(b); if (g && g.min === w.min && g.max === w.max) exact++; });
-        // the global extremes always; a column's own extremes in (almost) every column
-        assert.strictEqual(Math.min(...r.v), Math.min(...[...want.values()].map((w) => w.min)));
-        assert.strictEqual(Math.max(...r.v), Math.max(...[...want.values()].map((w) => w.max)));
-        assert.ok(exact / want.size > 0.97, 'columns with their exact min / max: ' + exact + ' of ' + want.size);
-        console.log('   ' + width + ' px: ' + r.t.length + ' points, ' + exact + ' / ' + want.size + ' columns exact');
-    }
-    e.close();
-});
-
 ok('a string tag in buckets: count, first, last as text; min / max / avg null', () => {
     const e = open(dir);
     const r = Q.run(e, { tags: 'Oven1.State', from: T0, to: T0 + DAY - 1, mode: 'bucket', bucket: '1d', agg: ['count', 'first', 'last', 'avg'] })['Oven1.State'];
@@ -142,7 +124,7 @@ ok('a crash mid write: a torn chunk in a segment and a torn index record are cut
     const e2 = open(d);
     const r = Q.run(e2, { tags: 'B', from: T0, to: T0 + DAY, mode: 'raw' }).B;
     assert.strictEqual(r.t.length, 3000);
-    assert.strictEqual(fs.statSync(path.join(d, 'idx', '0.r0')).size % 96, 0);
+    assert.strictEqual(fs.statSync(path.join(d, 'idx', '0.r0')).size % RECB, 0);
     e2.close();
 });
 
@@ -155,8 +137,8 @@ ok('retention: old raw segments are deleted; their summaries still draw the char
     assert.strictEqual(Q.run(e2, { tags: 'C', from: T0, to: T0 + DAY, mode: 'raw' }).C.t.length, 0);
     const day = Q.run(e2, { tags: 'C', from: T0, to: T0 + DAY - 1, mode: 'bucket', bucket: '1d', agg: ['count', 'min', 'max'] }).C;
     assert.deepStrictEqual([day.count[0], day.min[0], day.max[0]], [86400, 0, 99]);
-    const m4 = Q.run(e2, { tags: 'C', from: T0, to: T0 + DAY, width: 24 }).C;
-    assert.ok(m4.t.length > 0 && Math.max(...m4.v) === 99, 'the chart from the hour summaries');
+    const hours = Q.run(e2, { tags: 'C', from: T0, to: T0 + DAY - 1, mode: 'bucket', bucket: '1h', agg: ['max'] }).C;
+    assert.ok(hours.t.length === 24 && Math.max(...hours.max) === 99, 'the hours from the hour summaries');
     e2.close();
 });
 

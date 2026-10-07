@@ -34,6 +34,11 @@ fs.writeSync = function (fd, data, ...rest) {
 for (const k of ['fsyncSync', 'fdatasyncSync', 'renameSync', 'unlinkSync', 'truncateSync']) fs[k] = function (...a) { if (hit()) fail('EIO'); return real[k].apply(fs, a); };
 fs.writeFileSync = function (f, ...a) { if (hit()) { if (rnd() < 0.5) real.writeFileSync.call(fs, f, String(a[0]).slice(0, 5)); fail('ENOSPC'); } return real.writeFileSync.call(fs, f, ...a); };
 
+// FAULT_SOFT=1: the clock follows the steps (every point is "now") and the timer's checkpoint ({ soft: true }) runs every 60 steps, so
+// young small chunks stay open with their points only in the WAL: the path of a slow tag, crashed and failed at random
+const SOFT = process.env.FAULT_SOFT === '1';
+const nowStep = { k: start };
+if (SOFT) Date.now = () => Date.UTC(2026, 5, 1) + nowStep.k * 1000;
 const { Engine } = require('../lib/engine');
 const admin = require('../lib/admin');
 const T0 = Date.UTC(2026, 5, 1), name = (i) => 'F.T' + i, val = (i, k) => ((i * 131 + k * 7) % 1000) / 10;
@@ -62,7 +67,7 @@ const guard = (fn) => { try { return fn(); } catch (err) { restart(err); return 
 openEngine();
 const steps = 3000 + Math.floor(rnd() * 6000);
 for (let k = start; k < start + steps; k++) {
-    curStep = k;
+    curStep = k; nowStep.k = k;
     for (let i = 0; i < nTags; i++) {
         try { e.write(name(i), T0 + k * 1000, val(i, k)); } catch (err) {
             restart(err);                                                  // then the same point again, as the worker does
@@ -70,7 +75,7 @@ for (let k = start; k < start + steps; k++) {
         }
     }
     if (k % 100 === 0) { const ok = guard(() => { e.flushWal(); return true; }); if (ok) note('D ' + k); }
-    if (k % 700 === 0) guard(() => e.checkpoint());
+    if (SOFT ? k % 60 === 0 : k % 700 === 0) guard(() => e.checkpoint(SOFT ? { soft: true } : undefined));
     if (k % 2500 === 0 && k > start) guard(() => admin.run(e, { op: 'compact' }));
 }
 note('K ' + (start + steps - 1));

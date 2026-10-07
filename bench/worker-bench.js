@@ -7,6 +7,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { openHistorian } = require('../lib/client');
+// a chart: one bucket per pixel column, with the four values a line chart needs
+const chart = (q, width) => Object.assign({ mode: 'bucket', bucket: Math.max(1, Math.ceil((q.to - q.from + 1) / width)), agg: ['first', 'min', 'max', 'last'] }, q);
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? +process.argv[i + 1] : d; };
 const TAGS = arg('tags', 9000), SECONDS = arg('seconds', 60), MONTHS = arg('months', 6);
@@ -57,12 +59,12 @@ const resetStall = () => { worst = 0; last = performance.now(); };
         const pts = Object.values(out).reduce((s, x) => s + x.t.length, 0);
         console.log(`query   ${label.padEnd(44)} ${ms(ts[2]).padStart(8)}   main-thread stall ${ms(worstQ).padStart(7)}   → ${pts} points`);
     };
-    await time(`chart ${MONTHS} months, 1 200 px`, { tags: 'Plant.Long', from, to: end, width: 1200 });
-    await time('chart last 7 days, 1 200 px', { tags: 'Plant.Long', from: end - 7 * 864e5, to: end, width: 1200 });
+    await time(`chart ${MONTHS} months, 1 200 px`, chart({ tags: 'Plant.Long', from, to: end }, 1200));
+    await time('chart last 7 days, 1 200 px', chart({ tags: 'Plant.Long', from: end - 7 * 864e5, to: end }, 1200));
     await time(`avg / max per hour, ${MONTHS} months`, { tags: 'Plant.Long', from, to: end, mode: 'bucket', bucket: '1h', agg: ['avg', 'max'] });
     await time('per 1 s, last 24 h (decodes 86 400 points)', { tags: 'Plant.Long', from: end - 864e5, to: end, mode: 'bucket', bucket: '1s', agg: ['avg'] });
     await time('raw, last 1 hour', { tags: 'Plant.Long', from: end - 3600000, to: end, mode: 'raw' });
-    await time('a line: 450 tags, last 2 min, 600 px', { tags: 'Plant.Line3.*', from: Date.now() - SECONDS * 1000 - 60000, to: Date.now(), width: 600 });
+    await time('a line: 450 tags, last 2 min, 600 px', chart({ tags: 'Plant.Line3.*', from: Date.now() - SECONDS * 1000 - 60000, to: Date.now() }, 600));
 
     clearInterval(probe);
     await db.close();

@@ -6,7 +6,9 @@
 //   2. every point it returns is the point that was written (no wrong value, times rising, no duplicate);
 //   3. every point that a successful flushWal covered is there (durable means durable), except writes that threw;
 //   4. the index agrees with the chunks: verify finds nothing, bucket counts equal the rows.
-//   node test/fault.test.js [--rounds 10] [--tags 12] [--p 0.03]
+//   node test/fault.test.js [--rounds 10] [--tags 12] [--p 0.03] [--soft 1]
+// --soft 1: the writer's clock follows its steps and it checkpoints as the timer does ({ soft: true }): small young chunks stay open
+// with their points only in the WAL (a slow tag), and the same checks hold
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -17,7 +19,7 @@ const Q = require('../lib/query');
 const admin = require('../lib/admin');
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? +process.argv[i + 1] : d; };
-const ROUNDS = arg('rounds', 10), TAGS = arg('tags', 12), P = arg('p', 0.03);
+const SOFT = arg('soft', 0), ROUNDS = arg('rounds', 10), TAGS = arg('tags', 12), P = arg('p', 0.03);
 const T0 = Date.UTC(2026, 5, 1), name = (i) => 'F.T' + i, val = (i, k) => ((i * 131 + k * 7) % 1000) / 10;
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tsdb-fault-'));
 const logFile = path.join(dir, '..', path.basename(dir) + '.log');
@@ -29,7 +31,7 @@ const OPTS = { walSync: false, checkpointMs: 1e9, walFlushMs: 1e9, rawDays: 3650
     const failed = new Set();                 // "tag:step" of writes that threw
     for (let round = 0; round < ROUNDS; round++) {
         fs.writeFileSync(logFile, '');
-        const code = await new Promise((r) => spawn(process.execPath, [path.join(__dirname, 'fault-child.js'), dir, String(1000 + round), String(next), logFile, String(TAGS), String(P)], { stdio: 'inherit' }).on('exit', (c, sig) => r(sig || c)));
+        const code = await new Promise((r) => spawn(process.execPath, [path.join(__dirname, 'fault-child.js'), dir, String(1000 + round), String(next), logFile, String(TAGS), String(P)], { stdio: 'inherit', env: Object.assign({}, process.env, SOFT ? { FAULT_SOFT: '1' } : {}) }).on('exit', (c, sig) => r(sig || c)));
         assert.ok(code === 'SIGKILL' || code === 9 || code === 1, 'the child ended by the kill, got ' + code);
         let lastD = next - 1, lastK = next - 1, cur = next;
         for (const line of fs.readFileSync(logFile, 'utf8').split(String.fromCharCode(10))) {

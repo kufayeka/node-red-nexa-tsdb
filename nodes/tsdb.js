@@ -48,20 +48,23 @@ module.exports = function (RED) {
     function TsdbStore(n) {
         RED.nodes.createNode(this, n);
         const node = this, db = RED.nodes.getNode(n.db);
-        const prefix = n.prefix || '', deadband = num(n.deadband, 0), changesOnly = !!n.changesOnly;
+        const prefix = n.prefix || '', changesOnly = !!n.changesOnly;
         const last = new Map();
-        let nested = 0;
+        let nested = 0, rejected = 0;
         const put = (tag, ts, value) => {
             if (value !== null && typeof value === 'object') { nested++; return; }
             if (typeof value !== 'number' && typeof value !== 'boolean' && typeof value !== 'string') return;
             const name = prefix + tag;
-            // report by exception: a value is stored when it changes (past the deadband, for a number)
-            if (changesOnly || deadband > 0) {
+            // report by exception: a value is stored when it changes
+            let prevOf;
+            if (changesOnly) {
                 const p = last.get(name);
-                if (p !== undefined && (typeof value === 'number' && typeof p === 'number' ? Math.abs(value - p) <= deadband : value === p)) return;
+                prevOf = p;
+                if (p !== undefined && value === p) return;
                 last.set(name, value);
             }
-            db.engine.write(name, toMs(ts), value);
+            // the point is remembered as the last stored one only when the historian took it (overload / down: it is tried again)
+            if (!db.engine.write(name, toMs(ts), value)) { rejected++; if (changesOnly) { if (prevOf === undefined) last.delete(name); else last.set(name, prevOf); } }
         };
         // the database's counts (the worker reports them every second); late / wrong-type points are refused there
         const timer = setInterval(() => {
@@ -75,11 +78,14 @@ module.exports = function (RED) {
         node.on('input', function (msg, send, done) {
             if (!db || !db.engine) { done(new Error('no historian (check the database node)')); return; }
             try {
-                const p = msg.payload;
+                const p = msg.payload, before = rejected, t0 = Date.now();
                 if (Array.isArray(p)) p.forEach((r) => { if (r && typeof r === 'object') put(r.tag !== undefined ? r.tag : r.topic, r.ts !== undefined ? r.ts : r.timestamp !== undefined ? r.timestamp : msg.timestamp, r.value); });
                 else if (p !== null && typeof p === 'object' && !msg.topic) Object.keys(p).forEach((k) => put(k, msg.timestamp, p[k]));
                 else if (msg.topic) put(msg.topic, msg.timestamp, p);
                 else { done(new Error('a point needs msg.topic (the tag), or msg.payload as [{ tag, ts, value }] or { tag: value }')); return; }
+                // overload / historian down: said on the message, not swallowed (the points are not stored)
+                const lo = db.engine.lastOverload;
+                if (rejected > before && lo && lo.at >= t0) { done(new Error((rejected - before) + ' point(s) not stored - ' + lo.reason)); return; }
                 done();
             } catch (e) { done(e); }
         });
@@ -92,11 +98,24 @@ module.exports = function (RED) {
         RED.nodes.createNode(this, n);
         const node = this, db = RED.nodes.getNode(n.db);
         const list = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
-        const own = { tags: list(n.tags), from: n.from || '-1h', to: n.to || 'now', mode: n.mode || 'm4', width: num(n.width, 1000),
-            bucket: n.bucket || '1h', offset: n.offset || undefined, agg: list(n.agg).length ? list(n.agg) : ['avg'], fill: n.fill || 'none', format: n.format || 'series' };
+        const own = { tags: list(n.tags), from: n.from || '-1h', to: n.to || 'now', mode: n.mode || 'bucket',
+            bucket: n.bucket || '1h', offset: n.offset || undefined, tz: n.tz || undefined, agg: list(n.agg).length ? list(n.agg) : ['avg'], fill: n.fill || 'none', format: n.format || 'series' };
         node.on('input', function (msg, send, done) {
             if (!db || !db.engine) { done(new Error('no historian (check the database node)')); return; }
             try {
+                // msg.query as an array is a batch: every item is a query (over the node's own settings), the answer an array of { ok, result | error }
+                if (Array.isArray(msg.query)) {
+                    const qs = msg.query.map((x) => Object.assign({}, own, x && typeof x === 'object' ? x : {}));
+                    const tb = Date.now();
+                    db.engine.queryBatch(qs).then((r) => {
+                        msg.payload = r;
+                        const bad = r.filter((x) => !x.ok).length;
+                        node.status({ fill: bad ? 'yellow' : 'green', shape: 'dot', text: r.length + ' queries' + (bad ? ', ' + bad + ' failed' : '') + ', ' + (Date.now() - tb) + ' ms' });
+                        send(msg);
+                        done();
+                    }, (e) => { node.status({ fill: 'red', shape: 'ring', text: e.message }); done(e); });
+                    return;
+                }
                 const q = Object.assign({}, own, msg.query && typeof msg.query === 'object' ? msg.query : {});
                 if (!q.tags || (Array.isArray(q.tags) && !q.tags.length)) q.tags = msg.topic ? [msg.topic] : [];
                 const t0 = Date.now();

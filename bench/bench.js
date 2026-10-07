@@ -10,6 +10,8 @@ const os = require('os');
 const path = require('path');
 const { Engine } = require('../lib/engine');
 const Q = require('../lib/query');
+// a chart: one bucket per pixel column, with the four values a line chart needs
+const chart = (q, width) => Object.assign({ mode: 'bucket', bucket: Math.max(1, Math.ceil((q.to - q.from + 1) / width)), agg: ['first', 'min', 'max', 'last'] }, q);
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const TAGS = +arg('tags', 9000), POINTS = +arg('points', 600), MONTHS = +arg('months', 6), PERIOD = +arg('period', 1000);
@@ -62,16 +64,16 @@ const time = (label, q, count) => {
     console.log(`query  ${label.padEnd(46)} ${ms(ts[Math.floor(runs / 2)]).padStart(9)}  (best ${ms(ts[0])})  → ${count(out)}`);
 };
 const pts = (o) => Object.values(o).reduce((s, x) => s + x.t.length, 0) + ' points';
-time(`chart ${MONTHS} months, 1 200 px (M4)`, { tags: LONG, from, to: end, width: 1200 }, pts);
-time(`chart ${MONTHS} months, 4 000 px (M4)`, { tags: LONG, from, to: end, width: 4000 }, pts);
-time('chart last 7 days, 1 200 px (M4)', { tags: LONG, from: end - 7 * 864e5, to: end, width: 1200 }, pts);
-time('chart last 1 hour, 1 200 px (M4)', { tags: LONG, from: end - 3600000, to: end, width: 1200 }, pts);
+time(`chart ${MONTHS} months, 1 200 px`, chart({ tags: LONG, from, to: end }, 1200), pts);
+time(`chart ${MONTHS} months, 4 000 px`, chart({ tags: LONG, from, to: end }, 4000), pts);
+time('chart last 7 days, 1 200 px', chart({ tags: LONG, from: end - 7 * 864e5, to: end }, 1200), pts);
+time('chart last 1 hour, 1 200 px', chart({ tags: LONG, from: end - 3600000, to: end }, 1200), pts);
 time(`avg / min / max per hour, ${MONTHS} months`, { tags: LONG, from, to: end, mode: 'bucket', bucket: '1h', agg: ['avg', 'min', 'max'] }, pts);
 time(`per 8 h shift (06:00), ${MONTHS} months`, { tags: LONG, from, to: end, mode: 'bucket', bucket: '8h', offset: '6h', agg: ['avg', 'min', 'max', 'count'] }, pts);
 time('per 5 min, last 24 h', { tags: LONG, from: end - 864e5, to: end, mode: 'bucket', bucket: '5m', agg: ['avg', 'max'] }, pts);
 time('raw, last 1 hour', { tags: LONG, from: end - 3600000, to: end, mode: 'raw' }, pts);
 time('last value', { tags: LONG, mode: 'last', to: end }, pts);
-time(`20 tags (a line) × 1 h of 100 ms, 1 200 px`, { tags: 'Plant.Line3.*', from: end - 3600000 * 2, to: end + 3600000, width: 1200 }, (o) => Object.keys(o).length + ' tags, ' + pts(o));
+time(`20 tags (a line) × 1 h of 100 ms, 1 200 px`, chart({ tags: 'Plant.Line3.*', from: end - 3600000 * 2, to: end + 3600000 }, 1200), (o) => Object.keys(o).length + ' tags, ' + pts(o));
 r.close();
 console.log(`disk   ${mb(du(dir))} in ${dir}`);
 if (!keep) fs.rmSync(dir, { recursive: true, force: true });

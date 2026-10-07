@@ -12,6 +12,8 @@ const path = require('path');
 const { openHistorian } = require('../lib/client');
 const { Engine } = require('../lib/engine');
 const Q = require('../lib/query');
+// a chart: one bucket per pixel column, with the four values a line chart needs
+const chart = (q, width) => Object.assign({ mode: 'bucket', bucket: Math.max(1, Math.ceil((q.to - q.from + 1) / width)), agg: ['first', 'min', 'max', 'last'] }, q);
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? +process.argv[i + 1] : d; };
 const TAGS = arg('tags', 2000), SECONDS = arg('seconds', 60), KILLS = arg('kills', 10);
@@ -36,7 +38,7 @@ const tOf = (s) => T0 + s * 100;
     const querier = (async () => {
         while (running) {
             const q = [
-                { tags: name(Math.floor(Math.random() * TAGS)), from: T0, to: tOf(step), width: 400 },
+                chart({ tags: name(Math.floor(Math.random() * TAGS)), from: T0, to: tOf(step) }, 400),
                 { tags: 'S.T1*', from: T0, to: tOf(step), mode: 'bucket', bucket: '1m', agg: ['avg', 'count'] },
                 { tags: name(Math.floor(Math.random() * TAGS)), from: tOf(Math.max(0, step - 600)), to: tOf(step), mode: 'raw' },
                 { tags: 'S.*', mode: 'last' }
