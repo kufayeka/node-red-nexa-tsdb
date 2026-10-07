@@ -1,0 +1,147 @@
+<!-- ===== tsdb-config: a historian database (a folder) ===== -->
+<script type="text/javascript">
+    RED.nodes.registerType('tsdb-config', {
+        category: 'config',
+        defaults: {
+            name: { value: 'historian', required: true },
+            dir: { value: '' },
+            rawDays: { value: 30, validate: RED.validators.number() },
+            indexDays: { value: 365, validate: RED.validators.number() },
+            walFlushMs: { value: 1000, validate: RED.validators.number() },
+            checkpointMs: { value: 60000, validate: RED.validators.number() }
+        },
+        label: function () { return this.name || 'historian'; }
+    });
+</script>
+<script type="text/html" data-template-name="tsdb-config">
+    <div class="form-row"><label for="node-config-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-config-input-name"></div>
+    <div class="form-row"><label for="node-config-input-dir"><i class="fa fa-folder-o"></i> Folder</label><input type="text" id="node-config-input-dir" placeholder="empty: <userDir>/tsdb/<name>"></div>
+    <div class="form-row"><label for="node-config-input-rawDays"><i class="fa fa-clock-o"></i> Raw kept</label><input type="number" id="node-config-input-rawDays" style="width:90px"> days</div>
+    <div class="form-row"><label for="node-config-input-indexDays"><i class="fa fa-clock-o"></i> Summaries</label><input type="number" id="node-config-input-indexDays" style="width:90px"> days <span style="opacity:.7">(per chunk; hour and day summaries are kept)</span></div>
+    <div class="form-row"><label for="node-config-input-walFlushMs"><i class="fa fa-shield"></i> WAL sync</label><input type="number" id="node-config-input-walFlushMs" style="width:90px"> ms <span style="opacity:.7">(the most a power cut loses)</span></div>
+    <div class="form-row"><label for="node-config-input-checkpointMs"><i class="fa fa-floppy-o"></i> Checkpoint</label><input type="number" id="node-config-input-checkpointMs" style="width:90px"> ms</div>
+</script>
+<script type="text/html" data-help-name="tsdb-config">
+    <p>A historian database: a folder of compressed time series (Gorilla), with summaries per chunk, hour and day (an M4 / OM3 pyramid) so a chart of any range reads about as many records as it has pixels.</p>
+    <h3>Properties</h3>
+    <dl class="message-properties">
+        <dt>Folder <span class="property-type">string</span></dt><dd>Empty: <code>&lt;userDir&gt;/tsdb/&lt;name&gt;</code>. A relative path is from the user directory.</dd>
+        <dt>Raw kept <span class="property-type">days</span></dt><dd>Raw chunks older than this are deleted; their summaries still draw charts and give aggregates.</dd>
+        <dt>WAL sync <span class="property-type">ms</span></dt><dd>Points are written to the write-ahead log and fsynced this often.</dd>
+    </dl>
+</script>
+
+<!-- ===== tsdb-store ===== -->
+<script type="text/javascript">
+    RED.nodes.registerType('tsdb-store', {
+        category: 'storage',
+        color: '#a6bbcf',
+        defaults: {
+            name: { value: '' },
+            db: { value: '', type: 'tsdb-config', required: true },
+            prefix: { value: '' },
+            changesOnly: { value: false },
+            deadband: { value: 0, validate: RED.validators.number(true) }
+        },
+        inputs: 1,
+        outputs: 0,
+        icon: 'db.svg',
+        label: function () { return this.name || 'historian store'; },
+        paletteLabel: 'tsdb store'
+    });
+</script>
+<script type="text/html" data-template-name="tsdb-store">
+    <div class="form-row"><label for="node-input-db"><i class="fa fa-database"></i> Historian</label><input type="text" id="node-input-db"></div>
+    <div class="form-row"><label for="node-input-prefix"><i class="fa fa-sitemap"></i> Tag prefix</label><input type="text" id="node-input-prefix" placeholder="Plant1.Line1."></div>
+    <div class="form-row"><label for="node-input-changesOnly"><i class="fa fa-filter"></i> Changes only</label><input type="checkbox" id="node-input-changesOnly" style="width:auto"></div>
+    <div class="form-row"><label for="node-input-deadband"><i class="fa fa-arrows-v"></i> Deadband</label><input type="number" id="node-input-deadband" style="width:90px"> <span style="opacity:.7">(a number stored when it moves more than this)</span></div>
+    <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-input-name"></div>
+</script>
+<script type="text/html" data-help-name="tsdb-store">
+    <p>Stores points in the historian.</p>
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>topic <span class="property-type">string</span></dt><dd>The tag, with <code>payload</code> its value (number, boolean or string) and <code>timestamp</code> its time (ms, Date or ISO; default now).</dd>
+        <dt>payload <span class="property-type">array</span></dt><dd>Or many points: <code>[{ "tag": "Oven1.Temp", "ts": 1791240000000, "value": 182.4 }]</code>.</dd>
+        <dt>payload <span class="property-type">object</span></dt><dd>Or <code>{ "Oven1.Temp": 182.4, "Oven1.Running": true }</code> at <code>msg.timestamp</code> (no topic).</dd>
+    </dl>
+    <h3>Details</h3>
+    <p>A tag's type is set by its first value. A point older than the tag's newest, or of another type, is refused (counted in the status). A nested object is skipped: the core stores ts, tag, value; the asset layer splits objects into tags.</p>
+</script>
+
+<!-- ===== tsdb-query ===== -->
+<script type="text/javascript">
+    RED.nodes.registerType('tsdb-query', {
+        category: 'storage',
+        color: '#a6bbcf',
+        defaults: {
+            name: { value: '' },
+            db: { value: '', type: 'tsdb-config', required: true },
+            tags: { value: '' },
+            from: { value: '-1h' },
+            to: { value: 'now' },
+            mode: { value: 'm4' },
+            width: { value: 1000, validate: RED.validators.number(true) },
+            bucket: { value: '1h' },
+            offset: { value: '' },
+            agg: { value: 'avg' },
+            fill: { value: 'none' },
+            format: { value: 'series' }
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: 'db.svg',
+        label: function () { return this.name || 'historian query'; },
+        paletteLabel: 'tsdb query',
+        oneditprepare: function () {
+            $('#node-input-agg').typedInput({ types: [{ value: 'agg', multiple: true, options: ['avg', 'min', 'max', 'sum', 'count', 'first', 'last'].map(function (a) { return { value: a, label: a }; }) }] });
+            function show() {
+                var m = $('#node-input-mode').val();
+                $('.tsdb-m4').toggle(m === 'm4');
+                $('.tsdb-bucket').toggle(m === 'bucket');
+            }
+            $('#node-input-mode').on('change', show);
+            show();
+        }
+    });
+</script>
+<script type="text/html" data-template-name="tsdb-query">
+    <div class="form-row"><label for="node-input-db"><i class="fa fa-database"></i> Historian</label><input type="text" id="node-input-db"></div>
+    <div class="form-row"><label for="node-input-tags"><i class="fa fa-tags"></i> Tags</label><input type="text" id="node-input-tags" placeholder="Oven1.Temp, Line1.*.Speed"></div>
+    <div class="form-row"><label for="node-input-from"><i class="fa fa-clock-o"></i> From</label><input type="text" id="node-input-from" style="width:120px"> <label for="node-input-to" style="width:auto;margin-left:10px">to</label> <input type="text" id="node-input-to" style="width:120px"></div>
+    <div class="form-row"><label for="node-input-mode"><i class="fa fa-line-chart"></i> Mode</label>
+        <select id="node-input-mode">
+            <option value="m4">Chart (M4: the extremes of each pixel column)</option>
+            <option value="bucket">Buckets (avg / min / max … per interval)</option>
+            <option value="raw">Raw points</option>
+            <option value="last">Last value</option>
+        </select></div>
+    <div class="form-row tsdb-m4"><label for="node-input-width"><i class="fa fa-arrows-h"></i> Width</label><input type="number" id="node-input-width" style="width:90px"> px</div>
+    <div class="form-row tsdb-bucket"><label for="node-input-bucket"><i class="fa fa-th"></i> Bucket</label><input type="text" id="node-input-bucket" style="width:90px"> <label for="node-input-offset" style="width:auto;margin-left:10px">offset</label> <input type="text" id="node-input-offset" style="width:90px" placeholder="6h"></div>
+    <div class="form-row tsdb-bucket"><label for="node-input-agg"><i class="fa fa-calculator"></i> Aggregates</label><input type="text" id="node-input-agg"></div>
+    <div class="form-row tsdb-bucket"><label for="node-input-fill"><i class="fa fa-ellipsis-h"></i> Empty</label>
+        <select id="node-input-fill"><option value="none">Skipped</option><option value="null">null</option><option value="previous">The previous bucket</option></select></div>
+    <div class="form-row"><label for="node-input-format"><i class="fa fa-table"></i> Output</label>
+        <select id="node-input-format"><option value="series">Series per tag { t: [], v: [] }</option><option value="rows">Rows [{ tag, ts, value }]</option></select></div>
+    <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-input-name"></div>
+</script>
+<script type="text/html" data-help-name="tsdb-query">
+    <p>Reads the historian. The node's settings are the query; <code>msg.query</code> overrides any of them.</p>
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt class="optional">query <span class="property-type">object</span></dt>
+        <dd><code>{ tags, from, to, mode, width, bucket, offset, agg, fill, limit, format }</code>. Times: <code>-8h</code>, <code>now-30m</code>, ISO, ms. Durations: <code>500ms 30s 5m 1h 7d</code>. Tags: names, <code>*</code> matches any text.</dd>
+        <dt class="optional">topic <span class="property-type">string</span></dt><dd>The tag, when the query has none.</dd>
+    </dl>
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">object | array</span></dt>
+        <dd>Series: <code>{ "Oven1.Temp": { type, t: [...], v: [...] } }</code> (buckets: <code>t</code> and an array per aggregate). Rows: <code>[{ tag, ts, value }]</code>.</dd>
+    </dl>
+    <h3>Modes</h3>
+    <ul>
+        <li><b>Chart (M4)</b>: per pixel column its first, last, min and max: what a line drawn from all the points shows, in about 4 points a column, for any range.</li>
+        <li><b>Buckets</b>: avg / min / max / sum / count / first / last per interval (offset: a shift starting at 06:00 is <code>8h</code> + <code>6h</code>).</li>
+        <li><b>Raw</b>: every point (limit 1 000 000 a tag). <b>Last</b>: the newest value.</li>
+    </ul>
+</script>
