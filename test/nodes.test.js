@@ -33,9 +33,10 @@ const close = (node) => new Promise((res) => (node._h.close.length ? node._h.clo
 (async () => {
     const T = Date.now() - 3600000;
     let db = make('tsdb-config', { id: 'db1', name: 'plant' });
-    await ok('the config node opens <userDir>/tsdb/<name>', () => {
+    await ok('the config node opens <userDir>/tsdb/<name> (the engine in its worker)', async () => {
         assert.ok(db.engine);
         assert.strictEqual(db.dir, path.join(userDir, 'tsdb', 'plant'));
+        await db.engine.ready;
     });
     const store = make('tsdb-store', { db: 'db1', prefix: 'L1.', changesOnly: true });
     await ok('store: topic + payload, an array of points, an object of tags; changes only; a nested object skipped', async () => {
@@ -45,7 +46,7 @@ const close = (node) => new Promise((res) => (node._h.close.length ? node._h.clo
         await input(store, { payload: { Running: true, Info: { a: 1 } }, timestamp: T + 3000 });
         const err = await input(store, { payload: 5 });
         assert.ok(err && /topic/.test(err.message), 'no tag: an error');
-        const tags = db.engine.tagList().map((t) => t.name).sort();
+        const tags = (await db.engine.tags()).map((t) => t.name).sort();
         assert.deepStrictEqual(tags, ['L1.Mode', 'L1.Running', 'L1.Speed']);
     });
     const query = make('tsdb-query', { db: 'db1', tags: 'L1.Speed', from: '-2h', mode: 'raw' });

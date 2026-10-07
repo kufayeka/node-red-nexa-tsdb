@@ -7,6 +7,23 @@ The historian core of the Kufayeka Nexa Asset Framework: **ts, tag, value**, sto
 - **Compression:** Gorilla (delta-of-delta timestamps, XOR values) plus a decimal codec: when a chunk's values all have k decimals (PLC data), they are stored as integers ×10^k as deltas. ~1.2 bytes a point for a 2-decimal process value, ~2 bits for a constant or a state.
 - **Summary pyramid (M4 / OM3):** per chunk (~1 024 points), per segment (1 h) and per day: first, last, min, max **with their times**, sum, count. A chart's M4 (the extremes of each pixel column) and the bucket aggregates are answered from the summaries, reading about as many records as the answer has rows, whatever the range.
 
+## In a worker thread
+
+The engine runs in its own thread (`lib/worker.js`); Node-RED talks to it through `lib/client.js`:
+
+- `write(tag, ts, value)` only puts the point in a batch of typed arrays (no object per point); every 50 ms the batch is sent to the worker with its buffers **transferred**, not copied. A tag name crosses once, then only its number.
+- `query()`, `tags()`, `checkpoint()`, `close()` are Promises. Compression, the WAL, checkpoints, recovery and queries never run on Node-RED's event loop.
+- A late or wrong-type point is refused in the worker; its counts come back in `stats` every second (the store node's status).
+- A redeploy closes the database: the batch, a checkpoint, then the worker ends.
+
+```js
+const { openHistorian } = require('@kufayeka/node-red-tsdb-engine/lib/client');
+const db = openHistorian(dir, { rawDays: 30 });
+await db.ready;
+db.write('Oven1.Temp', Date.now(), 182.4);
+const r = await db.query({ tags: 'Oven1.Temp', from: '-8h', width: 1200 });
+```
+
 ## Nodes
 
 | Node | Does |
@@ -44,7 +61,20 @@ idx/<id>.r0   a summary per chunk + where it is    .r1 per hour    .r2 per day
 
 **Retention:** raw segments older than *Raw kept* are deleted; their summaries remain, so charts and aggregates of old periods still work. Per-chunk summaries are compacted after *Summaries* days.
 
-## Benchmark (`npm run bench`, Windows laptop, Node 24, warm OS cache)
+## Benchmark (Windows laptop, Node 24, warm OS cache)
+
+Through the worker, as Node-RED uses it (`node bench/worker-bench.js`):
+
+| | |
+|---|---|
+| write 9 000 tags × 100 ms, a burst per event-loop turn | **316 000 points/s** (real time needs 90 000); Node-RED's thread held at most **47 ms** per 9 000-point burst |
+| chart, 6 months, 1 200 px | **9 ms**, Node-RED's thread held 9 ms |
+| avg / max per hour, 6 months | 10 ms |
+| per 1 s, last 24 h (86 400 buckets) | 46 ms |
+| a line: 450 tags, 2 min, 600 px | 265 ms, Node-RED's thread held 13 ms |
+| a query that decodes 2 M points (test) | Node-RED's thread held **12 ms** (240 ms when run on it) |
+
+The engine alone (`npm run bench`):
 
 | | |
 |---|---|
@@ -59,13 +89,15 @@ idx/<id>.r0   a summary per chunk + where it is    .r1 per hour    .r2 per day
 ## Limits of this MVP (next steps)
 
 - **Late data** (older than a tag's newest point) is refused and counted; backfill comes later.
-- **Synchronous I/O in the Node-RED process**; the engine moves to a worker thread next (its API is already message-shaped).
+- A point still in the 50 ms batch (not yet in the worker's WAL) is lost if the whole process dies; a worker that dies alone loses only what was not in its WAL.
 - **No fluent JS builder yet** (`tsdb.query("Oven1.Temp").last("8h")…`): it will build the same query object.
 - Planned: time-budgeted queries, event-aware retention, KPIs at ingest (state durations, counters), quality codes in NaN payloads, blobs, a binary transport to Nexa charts.
 
 ## Tests
 
 ```
-npm test        # Gorilla round trips, the engine against brute force (every pyramid level), crash recovery, retention, the nodes
-npm run bench   # --tags 9000 --points 600 --months 6 --period 1000 --keep
+npm test        # Gorilla round trips; the engine against brute force (every pyramid level), crash recovery, retention;
+                # the worker (exact through it, the event loop kept free, a hard kill recovered); the nodes
+npm run bench   # the engine alone: --tags 9000 --points 600 --months 6 --period 1000 --keep
+node bench/worker-bench.js   # through the worker: --tags 9000 --seconds 60 --months 6
 ```
