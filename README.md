@@ -82,7 +82,9 @@ A point before 1970-01-01T01:00 is valid and stored like any other.
 | `rawDays` | 30 | Raw points are kept this long. The summaries outlive them. |
 | `indexDays` | 365 | Per-chunk summaries are kept this long. |
 | `walFlushMs` | 1000 | The WAL is written and fsynced this often. A power cut loses at most this much. |
-| `checkpointMs` | 60000 | Open chunks are written to the segments this often. |
+| `checkpointMs` | 60000 | How often the timer's checkpoint runs. |
+| `chunkMinPoints` | 256 | The timer's checkpoint cuts a chunk only when the open one has this many points, or is older than `maxChunkAgeMs`, or its segment is over. Smaller chunks cost 96 bytes of index each, so a tag that writes slowly would otherwise get a chunk per checkpoint. |
+| `maxChunkAgeMs` | 3600000 | The longest the first point of an open chunk waits before the chunk is cut. |
 | `walSync` | true | fsync the WAL on every flush. |
 | `minTs` / `maxFutureMs` | 1 / 86 400 000 | The time window a point must fall in (see above). |
 | `maxInFlight` | 2 000 000 | Backpressure limit (client side). |
@@ -163,9 +165,9 @@ A tag's store (disk or RAM) is fixed when the tag is created; its `keep` follows
 
 ## Reliability
 
-**Write path.** A point goes to the WAL first. Every `walFlushMs` the WAL is written and fsynced. Every `checkpointMs`, open chunks are written to their segments, the segments are fsynced, and only then is the WAL they covered deleted.
+**Write path.** A point goes to the WAL first. Every `walFlushMs` the WAL is written and fsynced. Every `checkpointMs` a checkpoint runs: chunks that are large enough, old enough or at the end of their segment are written to the segments and fsynced, and only then are the WAL files they covered deleted. A small young chunk stays open in memory, and the WAL files that hold its points are kept until the chunk is written (up to `maxChunkAgeMs`, so up to an hour of a slow tag's points sit in the WAL). Close, `{ op: "checkpoint" }` and the admin operations write every open chunk.
 
-**Recovery on start.** The last two segments are checked against the index (a torn chunk or record is cut), hour and day summaries are rebuilt from there, and the WAL is replayed (a point already stored is skipped). A power cut or crash loses at most the last `walFlushMs`. A point still in the client's 50 ms batch is lost if the whole process dies.
+**Recovery on start.** The last two segments are checked against the index (a torn chunk or record is cut), hour and day summaries are rebuilt from there, and the WAL is replayed (a point already stored is skipped). A power cut or crash loses at most the last `walFlushMs`. Start-up replays the WAL files that were kept, so it reads at most about an hour of points. A point still in the client's 50 ms batch is lost if the whole process dies.
 
 **Checksums.** Every chunk has a CRC32 over its header and body (format TSC2). Every read verifies it and compares the decoded points with the chunk's summary. Chunks written before checksums (TSC1) are still readable and are checked against their summary only.
 
@@ -205,20 +207,26 @@ A tag's store (disk or RAM) is fixed when the tag is created; its `keep` follows
 
 These figures are measured or computed from measured sizes. They are estimates for planning, not guarantees.
 
-**Disk per point.** A full 1 024-point chunk costs about 1.2 bytes per 2-decimal process value. In practice a chunk is written at every checkpoint, so a tag written once a second makes a chunk of about 60 points per minute. With the default 60-second checkpoint, measured on noisy 2-decimal data at 1 Hz: about **3.6 bytes per point** (1.9 for the chunks, 1.7 for the per-chunk index).
+**Disk per point.** The cost is the chunk (about 1.2 bytes per 2-decimal value in a full chunk, plus 20 bytes of header) and its 96-byte summary in the index. Measured on noisy 2-decimal data with the default settings:
 
-**Index size does not depend on the rate.** Each active tag adds one 96-byte per-chunk record per checkpoint, so about 50 MB per tag per year at the default checkpoint, whether the tag writes once a second or once every ten. Hour summaries add about 0.84 MB per tag per year and day summaries about 35 KB.
+| Writing rate per tag | Bytes per point | Per tag per year (index included) |
+|---|---|---|
+| 1 per second | about 2.1 (chunks 1.8, index 0.4) | about 66 MB |
+| 1 per 5 seconds | about 2.6 | about 16 MB |
+| 1 per minute | about 5.2 (chunks 1.9, index 3.3) | about 2.7 MB |
+
+A tag that writes slowly makes few, small chunks (about one an hour), so it costs more per point than a fast one but little per year. The per-chunk index is the part to watch: about 12 MB per tag per year at 1 Hz, kept for `indexDays` (365 by default). Hour summaries add about 0.84 MB per tag per year and day summaries about 35 KB, kept for ever unless a rule sets `keep`.
 
 **Example: 1 000 tags at 1 Hz, default settings.**
 
 | Item | Size |
 |---|---|
 | Raw points, 30 days | about 5 GB (steady) |
-| Per-chunk index, 365 days | about 52 GB (steady) |
+| Per-chunk index, 365 days | about 12 GB (steady) |
 | Hour and day summaries | +0.9 GB per year |
-| Total | about 58 GB in year 1, about 66 GB in year 10 |
+| Total | about 18 GB in year 1, about 26 GB in year 10 |
 
-**Settings that reduce it.** `indexDays: 60` cuts the per-chunk index by about six times. `checkpointMs: 300000` makes chunks larger and the index about five times smaller, at the price of a longer WAL replay after a crash. With both, 1 000 tags at 1 Hz need roughly 10 to 15 GB. Set a `keep` in the storage rules for tags that do not need to be stored for ever.
+**Settings that reduce it.** `indexDays: 60` cuts the per-chunk index about six times, and the index files are trimmed less often. A larger `chunkMinPoints` (for example 1024) makes chunks bigger still, at the price of more points waiting in the WAL. With `indexDays: 60`, 1 000 tags at 1 Hz need roughly 8 GB. Set a `keep` in the storage rules for tags that do not need to be stored for ever.
 
 **Hardware.** Use an SSD or a disk with power-loss protection. The engine fsyncs every second. An SD card is not recommended for long-running installs.
 

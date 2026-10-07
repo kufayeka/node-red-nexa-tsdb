@@ -85,6 +85,16 @@ const HOUR = 3600000;
         assert.ok(!fs.existsSync(path.join(d, 'LOCK')), 'no lock left by the failed open');
     });
 
+    await ok('an engine stopped by an I/O error that cannot even delete its LOCK: the engine that replaces it is not refused by that leftover', () => {
+        const d = tmp(), a = open(d), real = fs.unlinkSync;
+        fs.unlinkSync = function (f, ...r) { if (String(f).endsWith('LOCK')) { const e = new Error('injected EIO'); e.code = 'EIO'; throw e; } return real.call(fs, f, ...r); };
+        try { a.abort(); } finally { fs.unlinkSync = real; }
+        assert.ok(fs.existsSync(path.join(d, 'LOCK')), 'the leftover is there');
+        const b = open(d);                                    // the worker's restart: must not be locked out by its own leftover
+        assert.throws(() => open(d), (e) => e.code === 'ETSDB_LOCKED', 'but a live engine still holds it');
+        b.close();
+    });
+
     await ok('two historians (workers) on one folder: the second fails to open, the first is untouched and keeps its lock', async () => {
         const d = tmp(), a = openHistorian(d, {}); await a.ready;
         const b = openHistorian(d, {}); b.onError = () => {};
