@@ -48,23 +48,23 @@ module.exports = function (RED) {
     function TsdbStore(n) {
         RED.nodes.createNode(this, n);
         const node = this, db = RED.nodes.getNode(n.db);
-        const prefix = n.prefix || '', deadband = num(n.deadband, 0), changesOnly = !!n.changesOnly;
+        const prefix = n.prefix || '', changesOnly = !!n.changesOnly;
         const last = new Map();
         let nested = 0, rejected = 0;
         const put = (tag, ts, value) => {
             if (value !== null && typeof value === 'object') { nested++; return; }
             if (typeof value !== 'number' && typeof value !== 'boolean' && typeof value !== 'string') return;
             const name = prefix + tag;
-            // report by exception: a value is stored when it changes (past the deadband, for a number)
+            // report by exception: a value is stored when it changes
             let prevOf;
-            if (changesOnly || deadband > 0) {
+            if (changesOnly) {
                 const p = last.get(name);
                 prevOf = p;
-                if (p !== undefined && (typeof value === 'number' && typeof p === 'number' ? Math.abs(value - p) <= deadband : value === p)) return;
+                if (p !== undefined && value === p) return;
                 last.set(name, value);
             }
             // the point is remembered as the last stored one only when the historian took it (overload / down: it is tried again)
-            if (!db.engine.write(name, toMs(ts), value)) { rejected++; if (changesOnly || deadband > 0) { if (prevOf === undefined) last.delete(name); else last.set(name, prevOf); } }
+            if (!db.engine.write(name, toMs(ts), value)) { rejected++; if (changesOnly) { if (prevOf === undefined) last.delete(name); else last.set(name, prevOf); } }
         };
         // the database's counts (the worker reports them every second); late / wrong-type points are refused there
         const timer = setInterval(() => {

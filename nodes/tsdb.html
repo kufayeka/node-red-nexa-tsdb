@@ -104,8 +104,7 @@
             name: { value: '' },
             db: { value: '', type: 'tsdb-config', required: true },
             prefix: { value: '' },
-            changesOnly: { value: false },
-            deadband: { value: 0, validate: RED.validators.number(true) }
+            changesOnly: { value: false }
         },
         inputs: 1,
         outputs: 0,
@@ -118,7 +117,6 @@
     <div class="form-row"><label for="node-input-db"><i class="fa fa-database"></i> Historian</label><input type="text" id="node-input-db"></div>
     <div class="form-row"><label for="node-input-prefix"><i class="fa fa-sitemap"></i> Tag prefix</label><input type="text" id="node-input-prefix" placeholder="Plant1.Line1."></div>
     <div class="form-row"><label for="node-input-changesOnly"><i class="fa fa-filter"></i> Changes only</label><input type="checkbox" id="node-input-changesOnly" style="width:auto"></div>
-    <div class="form-row"><label for="node-input-deadband"><i class="fa fa-arrows-v"></i> Deadband</label><input type="number" id="node-input-deadband" style="width:90px"> <span style="opacity:.7">(a number stored when it moves more than this)</span></div>
     <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-input-name"></div>
 </script>
 <script type="text/html" data-help-name="tsdb-store">

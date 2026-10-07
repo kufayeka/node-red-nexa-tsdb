@@ -29,7 +29,7 @@ const r = await db.query({ tags: 'Oven1.Temp', from: '-8h', width: 1200 });
 | Node | Does |
 |---|---|
 | **tsdb-config** | A database: a folder (default `<userDir>/tsdb/<name>`), raw retention, summary retention, WAL sync, checkpoint. |
-| **tsdb-store** | `msg.topic` + `msg.payload` (+ `msg.timestamp`), or `msg.payload` = `[{ tag, ts, value }]`, or `{ tag: value }`. Tag prefix, changes only, deadband. |
+| **tsdb-store** | `msg.topic` + `msg.payload` (+ `msg.timestamp`), or `msg.payload` = `[{ tag, ts, value }]`, or `{ tag: value }`. Tag prefix, changes only. |
 | **tsdb-query** | The node's settings are a query; `msg.query` overrides any field. Output in `msg.payload`. |
 | **tsdb-admin** | `msg.payload` = `{ op: "dropTag" \| "deleteRange" \| "dropAll" \| "compact" \| "tags" \| "stats", ... }`. |
 
@@ -166,7 +166,7 @@ The engine alone (`npm run bench`):
 
 **100 000 tags:** the memory holds (a tag's head grows with its points: ~164 MB for 100 000 tags), but writing at 1 s is **0.7× real time on Windows**: a tag's index is its own files, and a checkpoint touching 100 000 of them spends ~170 s opening files (~1.7 ms each on Windows; Linux opens are ~10-50× faster). The envelope of this version: **about 20 000 tags at 1 s or 10 000 at 100 ms** on one writer. Past that: an index journal (one append stream, merged into the per-tag files in bulk), planned.
 
-**Ten years:** the hour and day summaries of a tag are 0.9 MB a year (10 000 tags: 9 GB a year; 100 000 tags: 88 GB), and a 10-year chart reads ~3 650 day summaries per tag (a few ms). Raw data at 100 ms without report-by-exception is ~0.5 TB a year per 1 000 tags: keep raw days to weeks and let the summaries carry the years, and store changes (deadband) where the process allows.
+**Ten years:** the hour and day summaries of a tag are 0.9 MB a year (10 000 tags: 9 GB a year; 100 000 tags: 88 GB), and a 10-year chart reads ~3 650 day summaries per tag (a few ms). Raw data at 100 ms without report-by-exception is ~0.5 TB a year per 1 000 tags: keep raw days to weeks and let the summaries carry the years.
 
 ## Soak test: 5 years, 262 million points, random ranges (`test/soak/`, `npm run soak:gen` / `soak:verify`)
 
