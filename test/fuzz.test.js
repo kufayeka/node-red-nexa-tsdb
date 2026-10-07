@@ -50,8 +50,8 @@ ok('query() with hostile objects answers or refuses with a reason - never an int
     const d = tmp(), e = open(d), t0 = Date.now() - HOUR;
     for (let i = 0; i < 3000; i++) { e.write('Num', t0 + i * 1000, i % 50); e.write('Str', t0 + i * 1000, 'm' + (i % 4)); e.write('Bool', t0 + i * 1000, i % 2 === 0); }
     e.checkpoint();
-    const odd = [undefined, null, 0, -1, 1, 0.5, NaN, Infinity, -Infinity, 1e300, '', ' ', 'abc', '-1h', 'now', 'now-1h', '-9999y', '2026-13-45', '1h', '0s', '-5m', [], {}, [[]], true, false, 'Num', ['Num', 'Str'], '*', '*N*', ['', null, 5], '\\', '(', '[a-', 'a**b', 'm4', 'raw', 'bucket', 'last', 'nope', 12, '1ms', '1y', Date.now(), t0, new Date(t0)];
-    const keys = ['tags', 'from', 'to', 'mode', 'width', 'bucket', 'offset', 'agg', 'fill', 'format', 'limit', 'maxPoints', 'page', 'exact', 'anchor', 'reverse', 'method', 'per', 'reset', 'tolerance', 'maxStep', 'ignoreZero', 'maxGap', 'value'];
+    const odd = [undefined, null, 0, -1, 1, 0.5, NaN, Infinity, -Infinity, 1e300, '', ' ', 'abc', '-1h', 'now', 'now-1h', '-9999y', '2026-13-45', '1h', '0s', '-5m', [], {}, [[]], true, false, 'Num', ['Num', 'Str'], '*', '*N*', ['', null, 5], '\\', '(', '[a-', 'a**b', 'range', 'raw', 'bucket', 'last', 'nope', 12, '1ms', '1y', Date.now(), t0, new Date(t0)];
+    const keys = ['tags', 'from', 'to', 'mode', 'bucket', 'offset', 'agg', 'fill', 'format', 'limit', 'maxPoints', 'page', 'exact', 'anchor', 'reverse', 'method', 'per', 'reset', 'tolerance', 'maxStep', 'ignoreZero', 'maxGap', 'value'];
     const goodAggs = [['avg'], ['delta'], ['increase', 'delta'], ['integral', 'twa'], ['range', 'min', 'max'], ['occurrences', 'entries', 'duration'], ['counts', 'durations', 'changes'], ['avg', 'integral', 'increase', 'counts']];
     let answered = 0, refused = 0;
     for (let i = 0; i < 4000; i++) {
@@ -77,7 +77,7 @@ function model(n, stepMax) {
 }
 const inRange = (pts, a, b) => pts.filter(([t]) => t >= a && t <= b);
 
-ok('random data, random checkpoints / reopens / crashes: raw, bucket (every aggregate) and m4 equal a brute-force model', () => {
+ok('random data, random checkpoints / reopens / crashes: raw and bucket (every basic aggregate) equal a brute-force model', () => {
     for (let round = 0; round < ROUNDS; round++) {
         const d = tmp(), tags = int(1, 4), data = {}, cp = int(200, 4000);
         const o = { chunkPoints: pick([64, 256, 1024]), segmentMs: pick([HOUR, HOUR, DAY / 4]) };
@@ -108,20 +108,6 @@ ok('random data, random checkpoints / reopens / crashes: raw, bucket (every aggr
                     assert.strictEqual(bk.min[j], Math.min(...vs), 'min'); assert.strictEqual(bk.max[j], Math.max(...vs), 'max');
                     assert.ok(Math.abs(bk.sum[j] - sum) <= 1e-6 * Math.max(1, Math.abs(sum)), 'sum'); assert.ok(Math.abs(bk.avg[j] - sum / g.length) <= 1e-6 * Math.max(1, Math.abs(sum / g.length)), 'avg');
                 });
-                // m4 (exact): per pixel column the extremes, first and last of its points are in the answer; nothing that is not a point
-                const width = pick([10, 100, 1000]), m = Q.run(e, { tags: name, from: a, to: b, mode: 'm4', width })[name];
-                if (want.length) {
-                    const cs = Math.max(1, (b - a + 1) / width), cols = new Map();
-                    for (const p of want) { const c = Math.floor((p[0] - a) / cs); (cols.get(c) || cols.set(c, []).get(c)).push(p); }
-                    const got = new Map(); m.t.forEach((t, i) => got.set(t, m.v[i]));
-                    for (const [c, g] of cols) {
-                        const mn = g.reduce((x, y) => (y[1] < x[1] ? y : x)), mx = g.reduce((x, y) => (y[1] > x[1] ? y : x));
-                        for (const p of [g[0], g[g.length - 1]]) assert.strictEqual(got.get(p[0]), p[1], 'm4 first/last of column ' + c + ' ' + name + ' round ' + round);
-                        assert.ok([...got].some(([t, v]) => v === mn[1] && Math.floor((t - a) / cs) === c), 'm4 min of column ' + c);
-                        assert.ok([...got].some(([t, v]) => v === mx[1] && Math.floor((t - a) / cs) === c), 'm4 max of column ' + c);
-                    }
-                    const set = new Map(want); m.t.forEach((t, i) => assert.strictEqual(set.get(t), m.v[i], 'm4 returned a point that is not in the data'));
-                }
             }
             const lastQ = Q.run(e, { tags: name, mode: 'last' })[name];
             assert.deepStrictEqual([lastQ.t[0], lastQ.v[0]], [last, pts[pts.length - 1][1]], 'last');

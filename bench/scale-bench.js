@@ -9,6 +9,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { openHistorian } = require('../lib/client');
+// a chart: one bucket per pixel column, with the four values a line chart needs
+const chart = (q, width) => Object.assign({ mode: 'bucket', bucket: Math.max(1, Math.ceil((q.to - q.from + 1) / width)), agg: ['first', 'min', 'max', 'last'] }, q);
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? +process.argv[i + 1] : d; };
 const TAGS = arg('tags', 100000), SECONDS = arg('seconds', 120), YEARS = arg('year', 1);
@@ -86,17 +88,17 @@ const out = (s) => { console.log(s); lines.push(s); };
         const pts = Object.values(r).reduce((s, o) => s + o.t.length, 0);
         out(`    ${label.padEnd(52)} ${ms(ts[2]).padStart(9)}  → ${Object.keys(r).length} tag(s), ${pts.toLocaleString()} points`);
     };
-    await time(`chart ${YEARS} y, 1 tag at 1 s, 1 200 px`, { tags: 'Year.Sec', from, to: end, width: 1200 });
-    await time(`chart ${YEARS} y, 1 tag at 1 s, 4 000 px`, { tags: 'Year.Sec', from, to: end, width: 4000 });
-    await time('chart 30 days, 1 tag at 1 s, 1 200 px', { tags: 'Year.Sec', from: end - 30 * DAY, to: end, width: 1200 });
+    await time(`chart ${YEARS} y, 1 tag at 1 s, 1 200 px`, chart({ tags: 'Year.Sec', from, to: end }, 1200));
+    await time(`chart ${YEARS} y, 1 tag at 1 s, 4 000 px`, chart({ tags: 'Year.Sec', from, to: end }, 4000));
+    await time('chart 30 days, 1 tag at 1 s, 1 200 px', chart({ tags: 'Year.Sec', from: end - 30 * DAY, to: end }, 1200));
     await time(`per day, ${YEARS} y, 1 tag`, { tags: 'Year.Sec', from, to: end, mode: 'bucket', bucket: '1d', agg: ['avg', 'min', 'max'] });
     await time(`per hour, ${YEARS} y, 1 tag`, { tags: 'Year.Sec', from, to: end, mode: 'bucket', bucket: '1h', agg: ['avg', 'min', 'max'] });
     await time(`per 8 h shift from 06:00, ${YEARS} y, 1 tag`, { tags: 'Year.Sec', from, to: end, mode: 'bucket', bucket: '8h', offset: '6h', agg: ['avg', 'count'] });
     await time('raw, last hour, 1 tag at 1 s', { tags: 'Year.Sec', from: end - 3600000, to: end, mode: 'raw' });
-    await time(`chart ${YEARS} y, 100 tags at 1 min, 600 px each`, { tags: 'Year.Min*', from, to: end, width: 600 });
+    await time(`chart ${YEARS} y, 100 tags at 1 min, 600 px each`, chart({ tags: 'Year.Min*', from, to: end }, 600));
     await time(`per day, ${YEARS} y, 100 tags`, { tags: 'Year.Min*', from, to: end, mode: 'bucket', bucket: '1d', agg: ['avg', 'max'] });
     await time(`last value of ${TAGS.toLocaleString()} tags`, { tags: 'Plant.*', mode: 'last' });
-    await time('chart 2 h of 2 000 tags at 100 ms, 300 px each', { tags: 'Plant.Area7.*', from: Date.now() - 4 * 3600000, to: Date.now(), width: 300 });
+    await time('chart 2 h of 2 000 tags at 100 ms, 300 px each', chart({ tags: 'Plant.Area7.*', from: Date.now() - 4 * 3600000, to: Date.now() }, 300));
 
     // C. ten years, from what was measured
     const d = du(dir);

@@ -42,7 +42,7 @@ ok('a raw answer past the limit is an error, never a cut result; page: true retu
     e.close();
 });
 
-ok('a flipped bit anywhere in a chunk is refused with its place (raw, a bucket under an hour, exact m4): 60 random flips', () => {
+ok('a flipped bit anywhere in a chunk is refused with its place (raw, a bucket under an hour, a bucket that straddles chunks): 60 random flips', () => {
     const d = tmp(); let e = open(d); fill(e, 'A', 20000); e.close();
     const file = seg0(d), orig = fs.readFileSync(file);
     let seed = 11; const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
@@ -54,7 +54,7 @@ ok('a flipped bit anywhere in a chunk is refused with its place (raw, a bucket u
         const e2 = open(d, { checkpointMs: 1e9 });
         const range = { tags: 'A', from: T0, to: T0 + 20000 * MIN };
         let caught = 0;
-        for (const q of [{ mode: 'raw' }, { mode: 'bucket', bucket: '10m', agg: ['sum'] }, { mode: 'm4', width: 4000 }]) {
+        for (const q of [{ mode: 'raw' }, { mode: 'bucket', bucket: '10m', agg: ['sum'] }, { mode: 'bucket', bucket: '7m', agg: ['min', 'max'] }]) {
             try { Q.run(e2, Object.assign({}, range, q)); } catch (x) { if (x.code === 'ETSDB_CORRUPT') caught++; else throw x; }
         }
         e2.close();

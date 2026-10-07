@@ -48,7 +48,7 @@ ok('a memory tag: its last `keep` only, in RAM; nothing on disk; gone after a re
     const r = Q.run(e, { tags: 'Vib.X', from: '-1h', mode: 'raw' }, t1 + 29900)['Vib.X'];
     assert.ok(r.t.length >= 95 && r.t.length <= 101 && r.v[r.v.length - 1] === 299, 'the last 10 s: ' + r.t.length);
     assert.strictEqual(Q.run(e, { tags: 'Fast', from: '-1h', mode: 'raw' }).Fast.t.length, 100, 'capped at max');
-    assert.ok(Q.run(e, { tags: 'Vib.X', from: '-1h', width: 50 })['Vib.X'].t.length > 0, 'a chart of it');
+    assert.ok(Q.run(e, { tags: 'Vib.X', from: '-1h', mode: 'bucket', bucket: '1m', agg: ['avg'] })['Vib.X'].t.length > 0, 'buckets of it');
     assert.deepStrictEqual(e.tagList().map((t) => [t.name, t.store]), [['Vib.X', 'memory'], ['Fast', 'memory'], ['Disk', 'disk']]);
     e.close();
     assert.ok(!/Vib/.test(fs.readFileSync(path.join(d, 'tags.log'), 'utf8')), 'not in tags.log');

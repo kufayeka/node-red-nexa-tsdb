@@ -95,7 +95,7 @@ await db.ready;
 
 db.write('Oven1.Temp', Date.now(), 182.4);                 // false if the point is not accepted
 
-const r = await db.query({ tags: 'Oven1.Temp', from: '-8h', width: 1200 });
+const r = await db.query({ tags: 'Oven1.Temp', from: '-8h', mode: 'bucket', bucket: '1m', agg: ['avg', 'max'] });
 await db.close();                                          // flushes, checkpoints, ends the worker
 ```
 
@@ -154,7 +154,7 @@ A query is one object (the **tsdb-query** node's form builds the same object; `m
 ```js
 { tags: ["Oven1.Temp", "Line1.*.Speed"],   // * matches any text
   from: "-8h", to: "now",                  // relative ("now-30m"), ISO text, or epoch ms
-  mode: "bucket",                          // m4 | bucket | range | raw | last
+  mode: "bucket",                          // bucket (default) | range | raw | last
   bucket: "1h", offset: "6h",              // bucket: its size, and where it starts
   agg: ["avg", "max", "increase"],         // see the table below
   fill: "none",                            // bucket: none | null | previous (what an empty bucket gives)
@@ -165,7 +165,6 @@ A query is one object (the **tsdb-query** node's form builds the same object; `m
 
 | Mode | Returns | Use |
 |---|---|---|
-| `m4` | For each pixel column (`width`), its first, min, max and last point. | A line chart: the shape is exact whatever the range. |
 | `bucket` | One row per time bucket with the aggregates you ask for. | Hourly or daily numbers, reports, KPI. |
 | `range` | **One row for the whole `[from, to]`**: the same aggregates over the range. | "How much between these two times?" |
 | `raw` | The stored points. | Export. A cut answer is an error; use `page: true` for pages. |
@@ -236,17 +235,13 @@ Give them in `agg`. An unknown name is an error that lists the known ones.
 
 ### Output
 
-`series` is `{ "<tag>": { type, t: [...], <agg>: [...], ... } }`; `rows` is `[{ tag, ts, <agg>... }]`. `m4` and `raw` return `t` and `v`. A bucket with no points is skipped, or filled with `fill`.
+`series` is `{ "<tag>": { type, t: [...], <agg>: [...], ... } }`; `rows` is `[{ tag, ts, <agg>... }]`. `raw` and `last` return `t` and `v`. A bucket with no points is skipped, or filled with `fill`.
 
 ### Rules the query follows
 
 - **An answer is never silently cut.** A `raw` query with more points than `limit` (default 1 000 000) is an error that says so. With `page: true` it returns `{ t, v, more, next }`, and the next page is `from: next`. An answer larger than `maxPoints` (default 5 000 000) is refused with its reason.
 - **A range older than retention says so.** The answer starts at the oldest kept time and the tag's series carries `clippedFrom`.
 - **Bad parameters are refused with a reason**, never an internal error.
-
-### M4 and `exact`
-
-By default (`exact: true`) every column's own min and max are exact: a chunk that straddles a column edge is decoded and its points are placed one by one. `exact: false` is faster: such a chunk is placed by its four points, so a column's min or max can miss a point within one chunk of its edge. The returned points are always real points, and the overall min, max, first and last are always exact.
 
 ## Recipes
 
@@ -303,11 +298,14 @@ Add `maxStep: 500` to also drop any single step bigger than 500 kWh, and `tolera
 
 Divide the milliseconds by 3 600 000 for hours.
 
-**A chart**
+**A line chart**
 
 ```js
-{ tags: "Oven1.Temp", from: "-8h", mode: "m4", width: 1200 }
+// 1 200 columns over 8 hours: one bucket per column (8 h / 1 200 = 24 s), with the four values a line needs
+{ tags: "Oven1.Temp", from: "-8h", mode: "bucket", bucket: "24s", agg: ["first", "min", "max", "last"] }
 ```
+
+Draw the four values of each bucket in time order and the line looks exactly like the line through all the points, whatever the range: the extremes of every column are kept. Use `(to - from) / width` as the bucket size.
 
 ## Storage and retention
 
@@ -434,7 +432,7 @@ npm run soak:gen && npm run soak:verify   # 5 years of data, random queries agai
 | `chunking.test.js` | Young chunks held in the WAL, cut by size, age and segment end; a crash with them open |
 | `compact.test.js` | Lazy index trimming, a crash in the middle, the retention time budget |
 | `rollup.test.js` | `delta`, `increase`, `integral`, `twa`, state aggregates and `range` against a brute force over random meters with resets, plateaus, zeros and gaps, through raw, chunk, hour and day levels, checkpoints, reopens and crashes; every counter option; hostile parameters |
-| `fuzz.test.js` | Hostile input to `write()` and `query()`; raw, bucket and m4 against a model through random checkpoints, reopens and crashes |
+| `fuzz.test.js` | Hostile input to `write()` and `query()`; raw and bucket against a model through random checkpoints, reopens and crashes |
 | `restart.test.js` | 300 open / write / stop cycles, 12 `SIGKILL`s of a real writer, 25 worker cycles; open time, file handles, WAL files and heap stay flat |
 | `fault.test.js` | A file system that fails at random, with `kill -9`, checked after every round (30 rounds: 775 restarts after injected errors; 30 rounds with young chunks: 1 915) |
 | `nodes.test.js` | The Node-RED nodes on a stand-in runtime |
@@ -449,28 +447,27 @@ Measured on a Linux virtual machine, Node 22, warm OS cache, data written throug
 
 | Query | Time |
 |---|---|
-| Chart over the whole year, 1 200 px (exact M4) | 96 ms |
-| Chart over 30 days / 24 hours | 22 ms / 8 ms |
-| Bucket 1 hour over the year (8 761 rows) | 61 ms |
-| Bucket 1 day over the year | 55 ms |
-| Bucket 15 min over 30 days / 1 min over 24 hours | 23 ms / 8 ms |
-| Raw, last hour / last 24 hours (86 400 points) / last 7 days (605 000 points) | 1 ms / 16 ms / 111 ms |
+| A chart over the whole year: buckets of first / min / max / last, 1 200 columns / 4 000 columns | 49 ms / 126 ms |
+| A chart over 30 days / 24 hours / 1 hour, 1 200 columns | 21 ms / 6 ms / 1 ms |
+| Bucket 1 hour over the year (8 760 rows), avg / min / max | 22 ms |
+| Bucket 1 day over the year | 11 ms |
+| Bucket 15 min over 30 days / 1 min over 24 hours | 48 ms / 6 ms |
+| Raw, last hour / last 24 hours (86 400 points) | 1 ms / 14 ms |
 | Last value | under 1 ms |
 
 **Reading, 1 000 tags for 3 days at 5 s (51.8 million points)**
 
 | Query | Time |
 |---|---|
-| Chart of one tag over 3 days | 21 ms |
+| Buckets of first / min / max / last of one tag over 3 days, 1 200 columns | 21 ms |
 | Raw, 24 hours of one tag | 7 ms |
-| 1 000 tags, last hour, 600 px each | 555 ms |
+| 1 000 tags, last hour, 600 buckets each | 555 ms |
 | Last value of all 1 000 tags | 1 ms |
 
 **Reading, 1 tag at 1 per minute for 5 years (2.6 million points)**
 
 | Query | Time |
 |---|---|
-| Chart over 5 years | 32 ms |
 | Bucket 1 hour over 5 years (43 800 rows) | 22 ms |
 | Bucket 15 min over 4 years (140 160 rows, decodes raw chunks) | 360 ms |
 | Bucket 1 min over 7 days | 2 ms |
@@ -509,7 +506,7 @@ Measured on a Linux virtual machine, Node 22, warm OS cache, data written throug
 | 10 000 tags at 100 ms | 2.7 times real time |
 | Stress: 2 000 tags, 4.6 M points in 60 s, 10 hard kills, a delete and compactions under load | every value correct, no duplicates; lost only what was in the last 600 ms before each kill |
 
-**5-year soak** (`test/soak/`): 100 tags at 1 per minute for 1 825 days (262 million points), 1.34 GB. 300 random queries (random tags and ranges; raw, bucket, m4, last) compared with a model: 0 differences. p50 / p95 per mode: m4 11 / 277 ms, bucket 5 ms / 2.1 s, raw 12 ms / 1.3 s, last 26 / 85 ms (Windows laptop, earlier version).
+**5-year soak** (`test/soak/`): 100 tags at 1 per minute for 1 825 days (262 million points), 1.34 GB. 300 random queries (random tags and ranges; raw, bucket, last) compared with a model: 0 differences. p50 / p95 per mode: bucket 5 ms / 2.1 s, raw 12 ms / 1.3 s, last 26 / 85 ms (Windows laptop, earlier version).
 
 ## Limits
 
