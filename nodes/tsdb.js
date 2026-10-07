@@ -67,8 +67,9 @@ module.exports = function (RED) {
         const timer = setInterval(() => {
             const st = db && db.engine ? db.engine.stats : null;
             if (!st || (!st.points && !nested)) return;
-            const refused = (st.late || 0) + (st.badType || 0);
-            node.status({ fill: refused ? 'yellow' : 'green', shape: 'dot', text: st.points + ' stored' + (refused ? ', ' + refused + ' refused (late / type)' : '') + (nested ? ', ' + nested + ' nested skipped' : '') });
+            const refused = (st.late || 0) + (st.badType || 0) + (st.overload || 0);
+            const lr = st.lastRefused;
+            node.status({ fill: refused ? 'yellow' : 'green', shape: 'dot', text: st.points + ' stored' + (st.overwritten ? ', ' + st.overwritten + ' replaced' : '') + (refused ? ', ' + refused + ' refused - last: ' + lr.tag + ' ' + lr.reason : '') + (nested ? ', ' + nested + ' nested skipped' : '') });
         }, 2000);
         node.on('input', function (msg, send, done) {
             if (!db || !db.engine) { done(new Error('no historian (check the database node)')); return; }

@@ -1,0 +1,24 @@
+A1  10.000 tags × 120 s at 1 s = 1.2 M points in 6.7 s → 179.355 points/s (real time needs 10.000/s: 17.9× real time)
+    a checkpoint of 10.000 open chunks: 6471 ms; Node-RED thread held at most 17 ms per burst; process memory 200 MB
+    disk 3 MB in 10.003 files (2.76 bytes a point incl. WAL + index)
+A2  10.000 tags at 100 ms, 30 s of data = 3 M points in 11.0 s → 272.125 points/s (real time needs 100.000/s: 2.72× real time)
+    (the writer was held back 19 times by the backpressure and wrote those points again)
+    totals: 4.200.000 points, 20.000 chunks, 1.36 bytes a point in chunks, refused 0
+B   1 year: 1 tag at 1 s + 100 tags at 1 min = 84.1 M points written in 119 s
+    chart 1 y, 1 tag at 1 s, 1 200 px                        21 ms  → 1 tag(s), 4.622 points
+    chart 1 y, 1 tag at 1 s, 4 000 px                        23 ms  → 1 tag(s), 14.921 points
+    chart 30 days, 1 tag at 1 s, 1 200 px                  7.86 ms  → 1 tag(s), 4.149 points
+    per day, 1 y, 1 tag                                    6.51 ms  → 1 tag(s), 366 points
+    per hour, 1 y, 1 tag                                     15 ms  → 1 tag(s), 8.761 points
+    per 8 h shift from 06:00, 1 y, 1 tag                   5.55 ms  → 1 tag(s), 1.096 points
+    raw, last hour, 1 tag at 1 s                           2.60 ms  → 1 tag(s), 3.601 points
+    chart 1 y, 100 tags at 1 min, 600 px each               498 ms  → 100 tag(s), 227.121 points
+    per day, 1 y, 100 tags                                  317 ms  → 100 tag(s), 36.600 points
+    last value of 10.000 tags                              5701 ms  → 10000 tag(s), 10.000 points
+    chart 2 h of 2 000 tags at 100 ms, 300 px each          128 ms  → 200 tag(s), 4.256 points
+C   disk now 307 MB in 29.068 files; per-chunk summaries 85 MB
+    100 000 tags, 1 s, every value stored        raw 5.08 TB/y · chunk summaries 295.6 GB/y · hour + day 87.6 GB/y → 10 y of summaries 876 GB
+    100 000 tags, 1 s, 10 % change (RBE)         raw 0.51 TB/y · chunk summaries 29.6 GB/y · hour + day 87.6 GB/y → 10 y of summaries 876 GB
+    9 000 tags, 100 ms, every value stored       raw 4.57 TB/y · chunk summaries 266.1 GB/y · hour + day 7.9 GB/y → 10 y of summaries 79 GB
+    9 000 tags, 100 ms, 10 % change (RBE)        raw 0.46 TB/y · chunk summaries 26.6 GB/y · hour + day 7.9 GB/y → 10 y of summaries 79 GB
+    1 000 tags, 1 s, every value stored          raw 0.05 TB/y · chunk summaries 3.0 GB/y · hour + day 0.9 GB/y → 10 y of summaries 9 GB

@@ -173,4 +173,51 @@ ok('query times and durations: relative, ISO, ms; a tag glob', () => {
     e.close();
 });
 
+ok('the same timestamp replaces the value (also after a checkpoint and a crash); an older one is refused with its reason; diagnose lists the problems first', () => {
+    const d = tmp(), e = open(d), t = Date.now() - 5000;
+    e.write('P', t, 1); e.write('P', t, 2);
+    e.write('P', t + 100, 3); e.write('P', t + 100, 4);
+    e.checkpoint();                                   // the last point stays in memory: still replaceable
+    e.write('P', t + 100, 5);
+    assert.strictEqual(e.write('P', t, 9), false, 'older: refused');
+    assert.strictEqual(e.write('P', t + 200, 'x'), false, 'another type: refused');
+    e.write('Q', t, 1);
+    e.flushWal();
+    crash(e);
+    const e2 = open(d);
+    const r = Q.run(e2, { tags: 'P', from: t - 1, to: t + 1000, mode: 'raw' }).P;
+    assert.deepStrictEqual([r.t.length, r.v[0], r.v[1]], [2, 2, 5], 'two points, the last values');
+    e2.write('P', t + 100, 6);
+    assert.strictEqual(Q.run(e2, { tags: 'P', from: t - 1, to: t + 1000, mode: 'raw' }).P.v[1], 6, 'replaceable after a restart too');
+    assert.strictEqual(e2.stats.overwritten, 1);
+    e2.write('Q', t - 1, 0);
+    const dx = e2.diagnose();
+    assert.deepStrictEqual(dx.map((x) => [x.tag, x.refused]), [['Q', 1], ['P', 0]], 'problems first');
+    assert.ok(/older than the last point/.test(dx[0].lastRefused.reason) && dx[0].lastRefused.ts === t - 1);
+    assert.strictEqual(e2.stats.lastRefused.tag, 'Q');
+    e2.close();
+});
+
+ok('100 000 tags: a head grows with its points (a tag with one point holds a few hundred bytes, not 32 KB)', () => {
+    const d = tmp(), e = open(d), mem = () => process.memoryUsage().heapUsed + process.memoryUsage().arrayBuffers, before = mem(), t = Date.now() - 1000;
+    for (let i = 0; i < 100000; i++) e.write('Plant.T' + i, t, i);
+    const used = mem() - before;
+    console.log('   100 000 tags with a point each: ' + (used / 1048576).toFixed(0) + ' MB');
+    assert.ok(used < 400 * 1048576, 'well under the 3.2 GB of fixed 1 024-point heads');
+    e.close();
+});
+
+ok('a backfill across many hours keeps only a few segment files open (no "too many open files"), every point exact', () => {
+    const d = tmp(), e = open(d, { segFds: 8, idxFds: 4 }), t0 = Math.floor((Date.now() - 20 * DAY) / H) * H;
+    for (let i = 0; i < 200 * 360; i++) { const t = t0 + i * 10000; e.write('BF', t, i % 1000); e.write('BG', t, i % 7); }
+    assert.ok(e.segFds.size <= 8 && e.idxFds.size <= 4, 'bounded: ' + e.segFds.size + ' / ' + e.idxFds.size);
+    e.close();
+    const e2 = open(d), r = Q.run(e2, { tags: 'BF', from: t0, to: t0 + 200 * H, mode: 'raw' }).BF;
+    assert.strictEqual(r.t.length, 200 * 360);
+    assert.ok(r.v.every((v, i) => v === i % 1000));
+    const day = Q.run(e2, { tags: 'BG', from: t0, to: t0 + 200 * H, mode: 'bucket', bucket: '1d', agg: ['count'] }).BG;
+    assert.strictEqual(day.count.reduce((a, b) => a + b, 0), 200 * 360, 'the day summaries hold every point');
+    e2.close();
+});
+
 console.log(`\n${passed} passed\nALL OK`);

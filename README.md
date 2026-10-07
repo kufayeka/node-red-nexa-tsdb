@@ -44,6 +44,19 @@ In the database node, a row per rule; the first whose pattern matches a tag deci
 
 A tag's store is set when it is created; its keep follows the rules of each start.
 
+## Writing: the same time replaces, an older one is refused, a backlog is refused
+
+- A point with **the same timestamp** as a tag's last point **replaces** its value (counted as `overwritten`). A tag's last point stays in memory (and in the WAL across a checkpoint) while it is recent, so it can still be replaced after a restart.
+- A point **older** than the tag's last one, or of **another type**, is refused (`late`, `badType`).
+- **Backpressure:** the points sent to the worker and not yet stored are counted; past `maxInFlight` (2 M, about 40 MB) a write is refused as an `overload` instead of a backlog growing until the process runs out of memory. A writer that gets `false` waits and writes again.
+- If the worker is down, a write is refused at once (`historian down: ...`) and every request still waiting is rejected; nothing hangs.
+
+## Diagnostics
+
+`{ op: "diagnose", tags?: "Line1.*", problems?: true }` → per tag, problems first:
+`{ tag, type, store, written, overwritten, late, badType, refused, lastRefused: { ts, lastTs, reason, value, at }, lastTs, lastWriteAgoMs, inMemory }`.
+`{ op: "stats" }` has the totals and the database's last refusal; the store node's status shows it (`... refused - last: Oven1.Temp older than the last point (...)`).
+
 ## Deleting
 
 ```js
@@ -112,9 +125,28 @@ The engine alone (`npm run bench`):
 | chart, last 7 days, 1 200 px | 111 ms |
 | raw, last hour / last value | 3 ms / 1 ms |
 
+## Scale and stress (`bench/scale-bench.js`, `npm run stress`; Windows laptop, Node 24)
+
+| | |
+|---|---|
+| 10 000 tags at 1 s | **18× real time**, Node-RED's thread held ≤ 17 ms per burst, 200 MB |
+| 10 000 tags at 100 ms | **2.7× real time**, 1.36 bytes a point, none lost |
+| a year of 1 tag at 1 s + 100 tags at 1 min (84 M points) | written in 119 s |
+| chart 1 year, 1 200 / 4 000 px | **21 / 23 ms** |
+| per day / per hour / per 8 h shift, 1 year | 6.5 / 15 / 5.5 ms |
+| chart 1 year of 100 tags, 600 px each | 498 ms |
+| last value of 10 000 tags | 32 ms |
+| stress: 2 000 tags, 4.6 M points in 60 s, **10 hard kills**, a delete and compactions under load | every value right, **no duplicate**, lost only what was in the last 600 ms before each kill |
+
+**100 000 tags:** the memory holds (a tag's head grows with its points: ~164 MB for 100 000 tags), but writing at 1 s is **0.7× real time on Windows**: a tag's index is its own files, and a checkpoint touching 100 000 of them spends ~170 s opening files (~1.7 ms each on Windows; Linux opens are ~10-50× faster). The envelope of this version: **about 20 000 tags at 1 s or 10 000 at 100 ms** on one writer. Past that: an index journal (one append stream, merged into the per-tag files in bulk), planned.
+
+**Ten years:** the hour and day summaries of a tag are 0.9 MB a year (10 000 tags: 9 GB a year; 100 000 tags: 88 GB), and a 10-year chart reads ~3 650 day summaries per tag (a few ms). Raw data at 100 ms without report-by-exception is ~0.5 TB a year per 1 000 tags: keep raw days to weeks and let the summaries carry the years, and store changes (deadband) where the process allows.
+
 ## Limits of this MVP (next steps)
 
 - **Late data** (older than a tag's newest point) is refused and counted; backfill comes later.
+- **One worker per database**: under a flood of writes, queries queue behind them (a stress run completes 20 queries a minute while it writes 4.6 M points). One writer + N readers is planned.
+- **100 000 tags** need the index journal above.
 - A point still in the 50 ms batch (not yet in the worker's WAL) is lost if the whole process dies; a worker that dies alone loses only what was not in its WAL.
 - **No fluent JS builder yet** (`tsdb.query("Oven1.Temp").last("8h")…`): it will build the same query object.
 - Planned: time-budgeted queries, event-aware retention, KPIs at ingest (state durations, counters), quality codes in NaN payloads, blobs, a binary transport to Nexa charts.

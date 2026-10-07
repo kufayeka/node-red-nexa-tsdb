@@ -5,7 +5,8 @@
   "main": "lib/engine.js",
   "scripts": {
     "test": "node test/gorilla.test.js && node test/engine.test.js && node test/worker.test.js && node test/admin.test.js && node test/nodes.test.js",
-    "bench": "node bench/bench.js"
+    "bench": "node bench/bench.js",
+    "stress": "node test/stress.js --tags 2000 --seconds 60 --kills 10"
   },
   "node-red": {
     "version": ">=4.0.0",
