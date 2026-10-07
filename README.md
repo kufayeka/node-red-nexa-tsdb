@@ -51,6 +51,14 @@ A tag's store is set when it is created; its keep follows the rules of each star
 - **Backpressure:** the points sent to the worker and not yet stored are counted; past `maxInFlight` (2 M, about 40 MB) a write is refused as an `overload` instead of a backlog growing until the process runs out of memory. A writer that gets `false` waits and writes again.
 - If the worker is down, a write is refused at once (`historian down: ...`) and every request still waiting is rejected; nothing hangs.
 
+## Refused at the door, and one engine a folder
+
+- A time before `minTs` (1 ms: 0 is a device with no clock, and a zero-filled WAL tail reads as 0), not a number, or more than `maxFutureMs` (1 day) ahead of the clock is **refused** with its reason: one wrong clock must not make every later point of a tag "late". A point in 1970 (after 0) is stored like any other.
+- **NaN is refused** (counted as `badType`): it would count in an average and add nothing to it.
+- **A folder has one engine:** a `LOCK` file (pid + a heartbeat on every WAL flush) refuses a second open (`ETSDB_LOCKED`): two config nodes with the same name, or two Node-RED instances, on one folder. A lock whose process is gone, or that has not beat for 30 s, is taken over.
+- A range that starts before retention (`rawDays`, or a rule's `keep` / `raw`) is answered from what is kept, and the answer says so: `clippedFrom` on the tag's series.
+- Disk use is about **2 - 4 bytes a point** for 2-decimal process data written at 1 Hz with the default 60 s checkpoint (a chunk per tag per checkpoint is ~60 points, and its summary is 96 bytes): the 1.2 bytes above is a full 1 024-point chunk. A longer `checkpointMs` makes bigger chunks (and a longer WAL replay after a crash).
+
 ## Diagnostics
 
 `{ op: "diagnose", tags?: "Line1.*", problems?: true }` → per tag, problems first:

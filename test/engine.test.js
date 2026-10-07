@@ -17,7 +17,7 @@ const T0 = Math.floor((Date.now() - 3 * DAY) / DAY) * DAY;   // three days ago a
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'tsdb-'));
 const open = (dir, o) => new Engine(dir, Object.assign({ walSync: false, checkpointMs: 1e9, walFlushMs: 1e9 }, o)).open();
 // a crash: the process dies, nothing more is written (what the OS already has stays)
-function crash(e) { e._timers.forEach(clearInterval); if (e.walFd !== null) fs.closeSync(e.walFd); e.segFds.forEach((s) => fs.closeSync(s.fd)); }
+function crash(e) { e._timers.forEach(clearInterval); if (e.walFd !== null) fs.closeSync(e.walFd); e.segFds.forEach((s) => fs.closeSync(s.fd)); e._unlock(); }   // the process is gone: so is its lock
 
 let seed = 7;
 const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };

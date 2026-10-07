@@ -14,7 +14,7 @@ let passed = 0;
 function ok(label, fn) { fn(); passed++; console.log('✔ ' + label); }
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'tsdb-a-'));
 const open = (dir, o) => new Engine(dir, Object.assign({ walSync: false, checkpointMs: 1e9, walFlushMs: 1e9 }, o)).open();
-function crash(e) { e._timers.forEach(clearInterval); if (e.walFd !== null) fs.closeSync(e.walFd); e.segFds.forEach((s) => fs.closeSync(s.fd)); }
+function crash(e) { e._timers.forEach(clearInterval); if (e.walFd !== null) fs.closeSync(e.walFd); e.segFds.forEach((s) => fs.closeSync(s.fd)); e._unlock(); }   // the process is gone: so is its lock
 const DAY = 864e5, H = 36e5, NOW = Date.now();
 const T0 = Math.floor((NOW - 3 * DAY) / DAY) * DAY;
 

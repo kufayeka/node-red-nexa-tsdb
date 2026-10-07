@@ -50,18 +50,21 @@ module.exports = function (RED) {
         const node = this, db = RED.nodes.getNode(n.db);
         const prefix = n.prefix || '', deadband = num(n.deadband, 0), changesOnly = !!n.changesOnly;
         const last = new Map();
-        let nested = 0;
+        let nested = 0, rejected = 0;
         const put = (tag, ts, value) => {
             if (value !== null && typeof value === 'object') { nested++; return; }
             if (typeof value !== 'number' && typeof value !== 'boolean' && typeof value !== 'string') return;
             const name = prefix + tag;
             // report by exception: a value is stored when it changes (past the deadband, for a number)
+            let prevOf;
             if (changesOnly || deadband > 0) {
                 const p = last.get(name);
+                prevOf = p;
                 if (p !== undefined && (typeof value === 'number' && typeof p === 'number' ? Math.abs(value - p) <= deadband : value === p)) return;
                 last.set(name, value);
             }
-            db.engine.write(name, toMs(ts), value);
+            // the point is remembered as the last stored one only when the historian took it (overload / down: it is tried again)
+            if (!db.engine.write(name, toMs(ts), value)) { rejected++; if (changesOnly || deadband > 0) { if (prevOf === undefined) last.delete(name); else last.set(name, prevOf); } }
         };
         // the database's counts (the worker reports them every second); late / wrong-type points are refused there
         const timer = setInterval(() => {
@@ -75,11 +78,14 @@ module.exports = function (RED) {
         node.on('input', function (msg, send, done) {
             if (!db || !db.engine) { done(new Error('no historian (check the database node)')); return; }
             try {
-                const p = msg.payload;
+                const p = msg.payload, before = rejected, t0 = Date.now();
                 if (Array.isArray(p)) p.forEach((r) => { if (r && typeof r === 'object') put(r.tag !== undefined ? r.tag : r.topic, r.ts !== undefined ? r.ts : r.timestamp !== undefined ? r.timestamp : msg.timestamp, r.value); });
                 else if (p !== null && typeof p === 'object' && !msg.topic) Object.keys(p).forEach((k) => put(k, msg.timestamp, p[k]));
                 else if (msg.topic) put(msg.topic, msg.timestamp, p);
                 else { done(new Error('a point needs msg.topic (the tag), or msg.payload as [{ tag, ts, value }] or { tag: value }')); return; }
+                // overload / historian down: said on the message, not swallowed (the points are not stored)
+                const lo = db.engine.lastOverload;
+                if (rejected > before && lo && lo.at >= t0) { done(new Error((rejected - before) + ' point(s) not stored - ' + lo.reason)); return; }
                 done();
             } catch (e) { done(e); }
         });
