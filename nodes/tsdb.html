@@ -156,7 +156,7 @@
         label: function () { return this.name || 'historian query'; },
         paletteLabel: 'tsdb query',
         oneditprepare: function () {
-            $('#node-input-agg').typedInput({ types: [{ value: 'agg', multiple: true, options: ['avg', 'min', 'max', 'sum', 'count', 'first', 'last', 'range', 'delta', 'increase', 'integral', 'twa', 'occurrences', 'entries', 'duration', 'changes', 'counts', 'durations'].map(function (a) { return { value: a, label: a }; }) }] });
+            $('#node-input-agg').typedInput({ types: [{ value: 'agg', multiple: true, options: ['avg', 'min', 'max', 'sum', 'count', 'first', 'last', 'range', 'delta', 'increase', 'integral', 'twa', 'occurrences', 'entries', 'duration', 'changes', 'counts', 'durations', 'stddev', 'variance', 'median', 'p95', 'p99'].map(function (a) { return { value: a, label: a }; }) }] });
             function show() {
                 var m = $('#node-input-mode').val();
                 $('.tsdb-bucket').toggle(m === 'bucket' || m === 'range');
@@ -203,7 +203,7 @@
     </dl>
     <h3>Modes</h3>
     <ul>
-        <li><b>Buckets</b>: the aggregates per interval: avg / min / max / sum / count / first / last / range, delta, increase (a counter that resets), integral and twa (kW to kWh), and for states occurrences / entries / duration / changes / counts / durations The bucket is a size (<code>15m</code>, <code>1h</code>, UTC aligned; <code>offset</code> moves the start), a calendar unit of the time zone (<code>day</code>, <code>week</code>, <code>month</code>, <code>quarter</code>, <code>year</code>) or <code>auto</code> (months for 6 months, weeks for a month, days for a week, hours for a day).</li>
+        <li><b>Buckets</b>: the aggregates per interval: avg / min / max / sum / count / first / last / range, delta, increase (a counter that resets), integral and twa (kW to kWh), and for states occurrences / entries / duration / changes / counts / durations, and the spread: stddev / variance (sample; <code>population: true</code> for the whole population), median and any percentile <code>p0</code> ... <code>p100</code> (<code>p95</code>, <code>p99.9</code>; from the raw points, so only as far back as they are kept). The bucket is a size (<code>15m</code>, <code>1h</code>, UTC aligned; <code>offset</code> moves the start), a calendar unit of the time zone (<code>day</code>, <code>week</code>, <code>month</code>, <code>quarter</code>, <code>year</code>) or <code>auto</code> (months for 6 months, weeks for a month, days for a week, hours for a day).</li>
         <li><b>Range</b>: the same aggregates over the whole From - To as one row (for example the consumption between two times).</li>
         <li><b>Raw</b>: every point (limit 1 000 000 a tag). <b>Last</b>: the newest value.</li>
     </ul>

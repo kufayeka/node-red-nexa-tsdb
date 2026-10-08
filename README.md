@@ -202,6 +202,16 @@ Give them in `agg`. An unknown name is an error that lists the known ones.
 | `first` `last` | The first and last value in the bucket. | all |
 | `range` | `max − min`. | number |
 
+**Spread** (how much the value moves: a stable process, a noisy sensor)
+
+| Aggregate | Meaning | Types |
+|---|---|---|
+| `stddev` `variance` | The standard deviation and the variance of the points in the bucket. A sample by default (divided by n − 1, `null` for a single point); `population: true` divides by n. Answered from the summaries, so as fast as `avg` and over any range. | number, boolean |
+| `median` | The middle value (the same as `p50`). | number, boolean |
+| `p0` … `p100` | A percentile: `p95` is the value 95% of the points are at or below; decimals are allowed (`p99.9`). Exact, with linear interpolation between the two closest points (as numpy and Excel `PERCENTILE.INC`). `p0` is the min, `p100` the max. | number, boolean |
+
+A percentile cannot be merged from summaries, so it reads every raw point of the range: it is answered only as far back as the raw points are kept (`rawDays`); a bucket older than that gives `null` and the answer says `clippedFrom`. A range with more raw points than `maxPoints` is refused with its reason.
+
 **Change and counters** (a meter that only goes up, and sometimes resets)
 
 | Aggregate | Meaning |
@@ -241,6 +251,7 @@ Give them in `agg`. An unknown name is an error that lists the known ones.
 | `per` | `integral` | The time unit of the result: `ms`, `s`, `m`, `h` (default), `d`. kW with `per: "h"` is kWh. |
 | `maxGap` | `integral`, `duration` | An interval between two points longer than this (for example `"10m"`) is a gap in the data and is not counted. Default: no limit, so a gap is bridged. |
 | `value` | `occurrences`, `entries`, `duration` | The state to look for. |
+| `population` | `stddev`, `variance` | `true`: the points are the whole population (divide by n). Default: a sample (divide by n − 1). |
 
 ### How the aggregates are computed
 
@@ -248,7 +259,7 @@ Give them in `agg`. An unknown name is an error that lists the known ones.
 - **The integral is split exactly at bucket edges.** The line between two points is cut where it crosses an hour, and each part goes to its own hour. A bucket that lies entirely inside a gap gets its share too (unless `maxGap` is set). The time after the last point of the range, up to `to`, is not counted, because there is nothing to join it to.
 - **Speed.** With the default options these aggregates are answered from the hour, day and chunk summaries, like `avg`. Setting `tolerance`, `maxStep`, `ignoreZero`, `reset: "ignore"` or `maxGap` forces reading the raw points: exact, but limited to the raw retention (`rawDays`), and the answer says `clippedFrom` when the range goes further back. State aggregates read the points under any chunk that holds more than one state; a chunk that holds a single state is counted from its summary.
 - **The first bucket starts from the point before the range**, so the consumption of the first hour includes the step from the last reading before it.
-- A string tag has no `avg`, `delta`, `increase`, `integral` or `twa` (they are `null`); the state aggregates work on every type.
+- A string tag has no `avg`, `delta`, `increase`, `integral`, `twa`, `stddev`, `variance` or percentiles (they are `null`); the state aggregates work on every type.
 
 ### Output
 
@@ -452,7 +463,7 @@ idx/<id>.r2     one summary per day
 LOCK            held by the engine that has the folder open
 ```
 
-A summary record is 15 float64 (120 bytes): first, last, min, max (each with its time), sum, count, where the chunk is, the counter increase and the two integrals. The on-disk format may change between 0.x versions without a migration.
+A summary record is 16 float64 (128 bytes): first, last, min, max (each with its time), sum, count, where the chunk is, the counter increase, the two integrals and the sum of squared distances from the mean (for `stddev`). The on-disk format may change between 0.x versions without a migration.
 
 ### Retention
 
@@ -519,7 +530,7 @@ A tag's store (disk or RAM) is fixed when the tag is created; its `keep` follows
 
 These figures are measured or computed from measured sizes. They are estimates for planning, not guarantees.
 
-**Disk per point.** The cost is the chunk (about 1.2 bytes per 2-decimal value in a full chunk, plus 20 bytes of header) and its 120-byte summary in the index. Measured on noisy 2-decimal data with the default settings (before the summary grew from 96 to 120 bytes; add about 25% to the index part):
+**Disk per point.** The cost is the chunk (about 1.2 bytes per 2-decimal value in a full chunk, plus 20 bytes of header) and its 128-byte summary in the index. Measured on noisy 2-decimal data with the default settings (before the summary grew from 96 to 128 bytes; add about 33% to the index part):
 
 | Writing rate per tag | Bytes per point | Per tag per year (index included) |
 |---|---|---|
@@ -563,6 +574,7 @@ npm run soak:gen && npm run soak:verify   # 5 years of data, random queries agai
 | `compact.test.js` | Lazy index trimming, a crash in the middle, the retention time budget |
 | `batch.test.js` | Batches: order, one failing query among others, one `now`, the size limits, through the worker and the node |
 | `calendar.test.js` | Day, week, month, quarter and year edges in Jakarta, Kolkata, New York (daylight saving) and London; increase, delta, integral and counts over those buckets against a brute force; the buckets of a range add up to the range; `auto`; dates read in a zone |
+| `spread.test.js` | `stddev`, `variance`, `median` and percentiles against a brute force, through raw, chunk, hour and day levels, checkpoints, reopens and crashes; values around 1e9 that move by a few units; sample and population; percentiles past the raw retention |
 | `rollup.test.js` | `delta`, `increase`, `integral`, `twa`, state aggregates and `range` against a brute force over random meters with resets, plateaus, zeros and gaps, through raw, chunk, hour and day levels, checkpoints, reopens and crashes; every counter option; hostile parameters |
 | `fuzz.test.js` | Hostile input to `write()` and `query()`; raw and bucket against a model through random checkpoints, reopens and crashes |
 | `restart.test.js` | 300 open / write / stop cycles, 12 `SIGKILL`s of a real writer, 25 worker cycles; open time, file handles, WAL files and heap stay flat |
@@ -658,7 +670,7 @@ The per-month kWh from the counter (`increase`) and from the power signal (`inte
 - **No online backup or replication.** Copy the folder while the database is stopped, or from a snapshot, after `{ op: "checkpoint" }`.
 - **Power loss on real hardware is not tested.** It is simulated with torn and zero-filled tails and `kill -9`. A disk that lies about fsync can still lose data.
 - **No multi-day run has been done.** The longest runs are minutes; memory and file handle use stayed flat in them. A multi-day soak on the target hardware should come before relying on it as the only copy of the data.
-- **Aggregates.** Standard deviation and percentiles are not available (they cannot be answered from summaries). Fixed buckets given as a size (`"1d"`) are UTC; use the calendar units with `tz` for local days, weeks and months.
+- **Aggregates.** Percentiles and the median read the raw points, so they go back only `rawDays` and are bounded by `maxPoints`; there is no approximate sketch in the summaries yet. Fixed buckets given as a size (`"1d"`) are UTC; use the calendar units with `tz` for local days, weeks and months.
 - **The on-disk format of 0.x versions may change without a migration.** A database made by an older development build has to be recreated.
 - Planned: an index journal for 100 000 tags, one writer plus several readers, time-budgeted queries, a fluent query builder.
 
