@@ -509,11 +509,38 @@ A tag's store (disk or RAM) is fixed when the tag is created; its `keep` follows
 { op: "dropAll", confirm: "DROP ALL" }
 { op: "compact" }                                                         // reclaim bytes of dropped tags and replaced chunks
 { op: "verify", repair: false }                                           // see Reliability
+{ op: "backup" }                                                          // one file, while the database runs
+{ op: "restore", file: "backups/plant-20261008-031900.tsdb.gz", confirm: "RESTORE" }
 ```
 
 - `diagnose` returns per tag `{ tag, type, store, written, overwritten, late, badType, refused, lastRefused: { ts, lastTs, reason, value, at }, lastTs, lastWriteAgoMs, inMemory }`.
 - A pattern that is `*`, or that matches more than 100 tags, runs only with `confirm: <the number of tags it matches>`.
 - Deletes are crash safe: the changed files are written aside and fsynced, one line in `ops.log` commits them, then they are swapped in. A start after a power cut finishes a committed delete and drops an uncommitted one.
+
+### Backup and restore
+
+`{ op: "backup" }` writes the whole database to one gzip file while it runs. Without `file` it goes to `backups/<name>-<time>.tsdb.gz` next to the database folder (in Node-RED: `<userDir>/tsdb/backups/`). A relative `file` is resolved from that same folder; a file inside the database folder is refused. The answer is `{ op, file, files, bytes, fileBytes, created, ms }`.
+
+- **What is in it.** Every point written before the request, the summaries, the tags and the string dictionaries. A checkpoint runs first, then every file is listed with its size in one step: the backup is the state of a crash just after that checkpoint, which is what the engine recovers from. Memory (RAM) tags are not in it.
+- **Writes go on.** The files are copied a slice at a time. Points written meanwhile are stored as usual and are not in the backup. Retention, deletes, compact and repair wait (they are refused with the reason) until the backup is done. Measured: 28.8 million points (29 MB) in 0.9 s, a 6.8 MB file, no write refused, queries answered in at most 37 ms meanwhile.
+- **The file.** gzip (it has its own CRC32) of a manifest, the bytes of every file and a trailer. Format 1.
+
+`{ op: "restore", file, confirm: "RESTORE" }` replaces the whole database with a backup:
+
+1. The file is unpacked next to the database (`<name>.restore-<time>`). Every path, size and the trailer are checked; a cut, damaged or foreign file is refused.
+2. The unpacked database is opened and verified (every chunk and summary, as `verify`). Measured: 28.8 million points in 4.5 s.
+3. Only then is the live database closed, kept as `<name>.before-restore-<time>`, and the restored one put in its place and opened. If that open fails, the previous folder is put back.
+
+Anything that goes wrong before step 3 leaves the live database as it was. Points written while a restore runs go to the previous database (kept in `.before-restore-`), not to the restored one. Delete the `.before-restore-` folder when it is no longer needed.
+
+**Offline**, for a database that does not open, or with Node-RED stopped:
+
+```
+node node_modules/@kufayeka/node-red-tsdb-engine/lib/backup.js restore <file> <new or empty folder>
+node node_modules/@kufayeka/node-red-tsdb-engine/lib/backup.js backup <database folder> <file>
+```
+
+A backup holds the on-disk format of the version that made it. Restore it with the same version (0.x versions may change the format without a migration).
 
 ## Capacity planning
 
@@ -556,12 +583,13 @@ npm run soak:gen && npm run soak:verify   # 5 years of data, random queries agai
 | `gorilla.test.js` | Compression round trips |
 | `engine.test.js` | The engine against brute force at every summary level, crash recovery, retention |
 | `worker.test.js` | Results through the worker, a free event loop, a hard kill, I/O errors |
-| `admin.test.js` | Delete, compact, storage rules, a crash in the middle of a delete |
+| `admin.test.js` | Delete, compact, storage rules, a crash in the middle of a delete, a restart after a delete in the last two segments |
 | `integrity.test.js` | Bit flips, torn and zero tails, verify and repair, paging |
 | `robust.test.js` | Time 0 and 1970, wrong clocks, NaN, the folder lock, `clippedFrom`, the store node under overload |
 | `chunking.test.js` | Young chunks held in the WAL, cut by size, age and segment end; a crash with them open |
 | `compact.test.js` | Lazy index trimming, a crash in the middle, the retention time budget |
 | `batch.test.js` | Batches: order, one failing query among others, one `now`, the size limits, through the worker and the node |
+| `backup.test.js` | Backup while writing, restore equal to the moment of the backup, cut / damaged / hostile files refused with the live database unchanged, operations held during a backup, offline restore |
 | `calendar.test.js` | Day, week, month, quarter and year edges in Jakarta, Kolkata, New York (daylight saving) and London; increase, delta, integral and counts over those buckets against a brute force; the buckets of a range add up to the range; `auto`; dates read in a zone |
 | `rollup.test.js` | `delta`, `increase`, `integral`, `twa`, state aggregates and `range` against a brute force over random meters with resets, plateaus, zeros and gaps, through raw, chunk, hour and day levels, checkpoints, reopens and crashes; every counter option; hostile parameters |
 | `fuzz.test.js` | Hostile input to `write()` and `query()`; raw and bucket against a model through random checkpoints, reopens and crashes |
@@ -655,7 +683,7 @@ The per-month kWh from the counter (`increase`) and from the power signal (`inte
 
 - **No backfill.** Points older than a tag's newest point are refused, so store-and-forward from a reconnecting device is not supported.
 - **One worker per database.** Under heavy writes, queries queue behind them, and a very large query holds the worker (it is refused past `maxPoints`). Checkpoint and retention also run on this worker. A "one writer, several readers" design is planned.
-- **No online backup or replication.** Copy the folder while the database is stopped, or from a snapshot, after `{ op: "checkpoint" }`.
+- **No replication.** A backup is a file taken on request ([Backup and restore](#backup-and-restore)); schedule it with an inject node and copy the file to another machine.
 - **Power loss on real hardware is not tested.** It is simulated with torn and zero-filled tails and `kill -9`. A disk that lies about fsync can still lose data.
 - **No multi-day run has been done.** The longest runs are minutes; memory and file handle use stayed flat in them. A multi-day soak on the target hardware should come before relying on it as the only copy of the data.
 - **Aggregates.** Standard deviation and percentiles are not available (they cannot be answered from summaries). Fixed buckets given as a size (`"1d"`) are UTC; use the calendar units with `tz` for local days, weeks and months.
