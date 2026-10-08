@@ -131,7 +131,7 @@ module.exports = function (RED) {
     }
     RED.nodes.registerType('tsdb-query', TsdbQuery);
 
-    // ---- admin: drop tags, delete a range, drop all, compact, list, stats ------------------------------------
+    // ---- admin: drop tags, delete a range, drop all, compact, verify, backup, restore, list, stats ------------------------------------
     function TsdbAdmin(n) {
         RED.nodes.createNode(this, n);
         const node = this, db = RED.nodes.getNode(n.db);
@@ -142,7 +142,9 @@ module.exports = function (RED) {
             db.engine.admin(req).then((r) => {
                 msg.payload = r;
                 const what = Array.isArray(r) ? r.length + ' tags' : r.dryRun ? 'dry run: ' + (r.tags ? r.tags.length : 0) + ' tags, ' + (r.points || 0) + ' points'
-                    : r.op === 'deleteRange' || r.op === 'dropTag' ? (r.tags.length + ' tags, ' + r.points + ' points deleted') : r.op;
+                    : r.op === 'deleteRange' || r.op === 'dropTag' ? (r.tags.length + ' tags, ' + r.points + ' points deleted')
+                    : r.op === 'backup' ? 'backup ' + require('path').basename(r.file) + ' (' + Math.round(r.fileBytes / 1e5) / 10 + ' MB)'
+                    : r.op === 'restore' ? 'restored ' + r.points + ' points from ' + require('path').basename(r.file) : r.op;
                 node.status({ fill: r.dryRun ? 'blue' : 'green', shape: 'dot', text: what });
                 send(msg);
                 done();

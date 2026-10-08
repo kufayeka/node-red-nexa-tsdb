@@ -4,7 +4,10 @@
 //   - no duplicate, time strictly rising, every value the one written for its time;
 //   - a missing point only within the last moment before a kill (its batch / WAL not yet on disk) or in the deleted range.
 //
-//   node test/stress.js [--tags 2000] [--seconds 60] [--kills 10]
+//   node test/stress.js [--tags 2000] [--seconds 60] [--kills 10] [--pace 5]
+//
+// --pace: ms the writer waits after each step. A writer faster than the worker builds a backlog (up to maxInFlight points
+// sent but not yet in the WAL) that a kill loses, which is not the moment before the kill this test allows for; 0 = no pause.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -16,7 +19,7 @@ const Q = require('../lib/query');
 const chart = (q, width) => Object.assign({ mode: 'bucket', bucket: Math.max(1, Math.ceil((q.to - q.from + 1) / width)), agg: ['first', 'min', 'max', 'last'] }, q);
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? +process.argv[i + 1] : d; };
-const TAGS = arg('tags', 2000), SECONDS = arg('seconds', 60), KILLS = arg('kills', 10);
+const TAGS = arg('tags', 2000), SECONDS = arg('seconds', 60), KILLS = arg('kills', 10), PACE = arg('pace', 5);
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tsdb-stress-'));
 const OPTS = { walSync: true, walFlushMs: 100, checkpointMs: 2000, rawDays: 400, indexDays: 400 };
 const LOSS_MS = 600;            // a kill may lose what was written in its last moment (the 50 ms batch, the 100 ms WAL sync)
@@ -60,7 +63,7 @@ const tOf = (s) => T0 + s * 100;
         for (let i = 0; i < TAGS; i++) while (!db.write(name(i), tOf(step), val(i, step))) { held++; await wait(2); }
         stepWall[step] = performance.now();
         step++;
-        await new Promise(setImmediate);
+        await (PACE ? wait(PACE) : new Promise(setImmediate));
         const now = performance.now() - start;
         if (now > nextKill && kills.length < KILLS) {
             nextKill += killEvery;
