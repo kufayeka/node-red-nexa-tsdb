@@ -229,7 +229,7 @@
 <script type="text/html" data-template-name="tsdb-admin">
     <div class="form-row"><label for="node-input-db"><i class="fa fa-database"></i> Historian</label><input type="text" id="node-input-db"></div>
     <div class="form-row"><label for="node-input-op"><i class="fa fa-wrench"></i> Default op</label>
-        <select id="node-input-op"><option value="stats">stats</option><option value="tags">tags</option><option value="verify">verify (checks every chunk and summary)</option><option value="compact">compact</option></select>
+        <select id="node-input-op"><option value="stats">stats</option><option value="tags">tags</option><option value="verify">verify (checks every chunk and summary)</option><option value="compact">compact</option><option value="backup">backup (to &lt;userDir&gt;/tsdb/backups)</option></select>
         <span style="opacity:.7">(a delete is always sent in msg.payload)</span></div>
     <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-input-name"></div>
 </script>
@@ -244,6 +244,8 @@
             <code>{ "op": "dropAll", "confirm": "DROP ALL" }</code> deletes every tag and point.<br>
             <code>{ "op": "compact" }</code> reclaims the bytes of dropped tags and replaced chunks.<br>
             <code>{ "op": "verify" }</code> reads every chunk (checksum, then its points against its summary) and recomputes the hour / day summaries: <code>{ ok, chunks, points, damagedChunks, problems: [...] }</code>; <code>{ "op": "verify", "repair": true }</code> drops the damaged chunks from the index and rebuilds the summaries (the database answers again, without the damaged part, which is reported).<br>
+            <code>{ "op": "backup" }</code> writes the whole database to one file while it runs (default <code>&lt;userDir&gt;/tsdb/backups/&lt;name&gt;-&lt;time&gt;.tsdb.gz</code>; <code>file</code> to choose, relative to <code>&lt;userDir&gt;/tsdb</code>).<br>
+            <code>{ "op": "restore", "file": "backups/....tsdb.gz", "confirm": "RESTORE" }</code> replaces the database with a backup: unpacked and verified first, then swapped in; the previous database is kept as <code>&lt;name&gt;.before-restore-&lt;time&gt;</code>.<br>
             <code>{ "op": "tags", "tags": "Line1.*" }</code>, <code>{ "op": "stats" }</code>.
         </dd>
         <dt class="optional">dryRun <span class="property-type">boolean</span></dt><dd>In the request: what it would delete, nothing changed.</dd>

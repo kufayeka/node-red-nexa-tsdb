@@ -179,6 +179,37 @@ ok('a crash after the commit, before every rename: the start finishes the delete
     e2.close();
 });
 
+ok('deleteRange in the last two segments, then a restart (clean, crash, or a delete that never committed): the database opens, every point once', () => {
+    const t0 = Math.floor((NOW - 20 * 60000) / 1000) * 1000, from = t0 + 300000, to = t0 + 360000;
+    const fill = (e) => { const all = []; for (let t = t0; t < NOW - 5000; t += 1000) { e.write('A', t, (t / 1000) % 100); all.push(t); } e.checkpoint(); return all; };
+    const rawA = (e) => Array.from(Q.run(e, { tags: 'A', from: t0, to: NOW, mode: 'raw' }).A.t);
+    // clean close and a crash: the chunk the delete rewrote at the end of the open segment is not indexed a second time
+    for (const how of ['close', 'crash']) {
+        const d = tmp(), e = open(d), keep = fill(e).filter((t) => t < from || t > to);
+        admin.run(e, { op: 'deleteRange', tags: 'A', from, to });
+        assert.deepStrictEqual(rawA(e), keep);
+        if (how === 'close') e.close(); else crash(e);
+        const e2 = open(d);
+        assert.deepStrictEqual(rawA(e2), keep, how + ': the points after the restart');
+        assert.ok(admin.run(e2, { op: 'verify' }).ok, how + ': verify is clean');
+        e2.close();
+        const e3 = open(d);
+        assert.deepStrictEqual(rawA(e3), keep, how + ': and after a second restart');
+        e3.close();
+    }
+    // the rewritten chunk is on disk but the delete never committed: the old index stays, the orphan is ignored
+    const d = tmp(), e = open(d), all = fill(e);
+    const real = fs.renameSync;
+    fs.renameSync = function () { throw new Error('power cut'); };
+    const realLog = fs.openSync;
+    fs.openSync = function (f, ...a) { if (String(f).endsWith('ops.log')) throw new Error('power cut'); return realLog.call(fs, f, ...a); };
+    try { assert.throws(() => admin.run(e, { op: 'deleteRange', tags: 'A', from, to }), /power cut/); } finally { fs.renameSync = real; fs.openSync = realLog; }
+    crash(e);
+    const e2 = open(d);
+    assert.deepStrictEqual(rawA(e2), all, 'nothing deleted, nothing doubled');
+    e2.close();
+});
+
 ok('stats and tags', () => {
     const e = open(D);
     const s = admin.run(e, { op: 'stats' });
