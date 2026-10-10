@@ -116,7 +116,8 @@ const busyFs = (code, n) => { let calls = 0; return { calls: () => calls, rename
         h.onError = (e) => said.push(e.message);
         let ready = false;
         h.ready.then(() => { ready = true; }, () => {});
-        await sleep(100);
+        // until it says so (a worker starts in ~80-160 ms here: a fixed 100 ms wait failed now and then)
+        for (let i = 0; i < 300 && !said.length; i++) await sleep(10);
         assert.ok(said.some((m) => /injected test fault/.test(m) && /again in/.test(m)), 'it said why and that it tries again: ' + JSON.stringify(said));
         assert.strictEqual(ready, false, 'not ready yet, and not dead');
         const ts = Date.now() - 2000;
@@ -126,6 +127,29 @@ const busyFs = (code, n) => { let calls = 0; return { calls: () => calls, rename
         const r = await h.query({ tags: 'late', from: ts - 1000, to: ts + 1000, mode: 'raw' });
         assert.deepStrictEqual(Array.from(r.late.v), [42], 'the point that came first is stored');
         await h.close();
+    });
+
+    await ok('a redeploy whose close fails with an I/O error: the old worker ENDS (it used to restart and fight the new database node for the LOCK every 30 s); the new one opens and has every point', async () => {
+        const d = tmp();
+        const a = openHistorian(d, { walFlushMs: 50, checkpointMs: 1e9, rawDays: 36500, indexDays: 36500, workerEnv: { TSDB_TEST_FAULT: 'checkpoint:1' } });   // the close's checkpoint throws an EIO
+        const saidA = [];
+        a.onError = (e) => saidA.push(e.message);
+        await a.ready;
+        const ts = Date.now() - 5000;
+        for (let i = 0; i < 50; i++) a.write('R', ts + i * 10, i);
+        await sleep(300);                                          // in the WAL
+        await a.close();                                           // the redeploy: it resolves, it does not hang
+        assert.ok(a.worker.threadId < 0, 'the old worker is gone');
+        assert.ok(saidA.some((m) => /closed after an error/.test(m)), 'it said the close had an error: ' + JSON.stringify(saidA));
+        const b = openHistorian(d, { walFlushMs: 50, checkpointMs: 1e9, rawDays: 36500, indexDays: 36500 });   // the new database node
+        const saidB = [];
+        b.onError = (e) => saidB.push(e.message);
+        await b.ready;
+        const r = await b.query({ tags: 'R', from: ts - 1000, to: ts + 1000, mode: 'raw', limit: 1000 });
+        assert.strictEqual(r.R.v.length, 50, 'every point is there (recovered from the WAL)');
+        await sleep(1500);
+        assert.ok(!saidA.concat(saidB).some((m) => /could not restart|another engine/.test(m)), 'nobody fights for the LOCK: ' + JSON.stringify(saidA.concat(saidB)));
+        await b.close();
     });
 
     await ok('a folder another engine holds is still refused at once with its message (two database nodes on one folder), not waited for', async () => {
