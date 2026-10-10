@@ -106,7 +106,7 @@ await db.close();                                          // flushes, checkpoin
 
 | Node | Purpose |
 |---|---|
-| **tsdb-config** | One database: a folder (default `<userDir>/tsdb/<name>`), raw retention, summary retention, WAL flush and checkpoint intervals, [storage rules](#storage-rules-disk-or-ram). Opened on deploy, checkpointed and closed on redeploy. |
+| **tsdb-config** | One database: a folder (default `<userDir>/tsdb/<name>`), raw retention, summary retention, WAL flush and checkpoint intervals, [short-term RAM patterns and disk retention](#short-term-ram-and-disk-retention). Opened on deploy, checkpointed and closed on redeploy. |
 | **tsdb-store** | Writes points (the message shapes above). Options: tag prefix; *changes only* (a value equal to the previous one is not stored). Otherwise every value is stored as it arrives. If the historian is overloaded or down the message ends with an error; it is never dropped silently. |
 | **tsdb-query** | The node's settings are a query; `msg.query` overrides any field (use it for options the form does not show, such as `value`, `per`, `reset`). The result is `msg.payload`. |
 | **tsdb-admin** | `msg.payload = { op, ... }`: list tags, stats, diagnose, delete, compact, verify. See [Administration](#administration). |
@@ -146,7 +146,8 @@ A point before 1970-01-01T01:00 is valid and stored like any other.
 | `minTs` / `maxFutureMs` | 1 / 86 400 000 | The time window a point must fall in. |
 | `maxInFlight` | 2 000 000 | Backpressure limit (client side). |
 | `batchMs` | 50 | How often the client sends its batch to the worker. |
-| `rules` | none | [Storage rules](#storage-rules-disk-or-ram). |
+| `ram` | none | The tag patterns of the short-term store in RAM: `[{ pattern, keep, max }]`. See [Short-term (RAM) and disk retention](#short-term-ram-and-disk-retention). |
+| `rules` | none | How long the disk data of a tag pattern is kept: `[{ pattern, keep, raw }]`. An entry with `store: "memory"` (older versions) is read as a RAM pattern. |
 | `renameBudgetMs` | 1500 | An index file that is busy when it is replaced (Windows answers `EPERM` while any handle is open on it) is tried again for this long; see [A busy file](#a-busy-file-windows). |
 
 ## Asking questions: queries and aggregates
@@ -478,16 +479,25 @@ Old periods therefore still answer charts and aggregates (including consumption 
 
 Index files are trimmed lazily: a file is rewritten only when a quarter of it has expired (streamed in blocks, fsynced, renamed), and the worker's hourly pass has a 1 second budget and continues with the next tags on its next pass. Expired records that are waiting are never returned.
 
-### Storage rules: Disk or RAM
+### Short-term (RAM) and disk retention
 
-In the database node, each rule is a row. The first rule whose pattern matches a tag name decides (`*` matches any text). A tag that no rule matches is stored on disk with the default retention.
+**Every tag is on disk.** There are two separate lists in the database node (and two options, `ram` and `rules`):
 
-| Store | `keep` | Notes |
+| List | Row | What it does |
 |---|---|---|
-| **Disk** | 1 hour or more; empty means for ever. `raw` sets how long raw points are kept (summaries outlive them). | A query never returns anything older than `keep`. A disk `keep` under 1 hour is raised to 1 hour, with a warning. |
-| **RAM** | Any duration down to seconds (`10s`). `max` limits the number of points. | A ring buffer in memory: **nothing is written to disk** (no SSD or SD wear) and **it is lost on restart or redeploy** of the database node. About 16 bytes per point. The editor warns on every RAM rule. |
+| **Short-term (RAM)** `ram` | `pattern`, `keep` (any duration down to seconds, `10s`), `max` (points) | The tags whose name matches (`*` matches any text, the first match wins) are read and written in RAM only: a ring buffer of the last `keep`, **never written to disk** (no SSD or SD wear), **lost on restart or redeploy** of the database node, about 16 bytes a point. The editor warns on a long keep. |
+| **Disk retention** `rules` | `pattern`, `keep` (1 hour or more; empty = for ever), `raw` (how long raw points stay; summaries outlive them) | How long the disk data of the matching tags is kept; the first match wins; no match = `rawDays` / `indexDays` and the summaries for ever. A query never returns anything older than `keep`. A disk `keep` under 1 hour is raised to 1 hour, with a warning. |
 
-A tag's store (disk or RAM) is fixed when the tag is created; its `keep` follows the rules at every start.
+There is no Disk / RAM choice on a row any more: a RAM pattern is the filter of the tags that are short-term, and what it does not match is on disk.
+
+**The store follows the patterns of the run, not the first write.** Changing the patterns is a redeploy (the engine restarts), so:
+
+- **Disk -> RAM:** the tag's disk data stays exactly as it is (its files, its place in `tags.log`); the RAM starts **empty**, and a query answers from the RAM only while the tag is a RAM tag.
+- **RAM -> Disk again:** the writes go on appending to the same disk data of the tag, in time order, until a retention or a drop removes it. What was in RAM is gone (it was short-term; it is not copied to disk).
+- A tag that was never on disk and is a RAM tag is not in `tags.log`; a restart forgets it.
+- `keep` / `raw` of the disk data follow the disk retention at every start, also for a tag that is in RAM at the moment; a RAM `keep` of seconds never cuts the disk data of the same tag.
+- The admin operations act on the disk data (`dropTag` removes it and the RAM ring; `deleteRange` removes from both; `compact`, `verify`, `backup` are disk only). `tags` and `stats` say `store: "memory"` for a tag that is read from RAM now.
+- A flow of an older version that has `{ "store": "memory" }` in `rules` keeps working: such an entry is read as a RAM pattern (and shown in the RAM list of the editor).
 
 ## Reliability
 
@@ -499,7 +509,7 @@ Windows refuses to rename a file over one that is open (`EPERM`, also `EACCES` /
 - **The index compaction closes its own handle before it renames**, and a compaction that still cannot rename is **not an error of the data path**: the open goes on, the file keeps its expired records (a query never returns them anyway: `keep` is applied when reading), `stats.retentionBusy` and `stats.lastRetentionBusy` say it, and the next retention pass tries again. A pass that finds a file busy stops there and starts after that tag next time, so one file that stays busy cannot starve the others.
 - **A worker whose first open fails with an I/O error of the system tries again** with growing pauses (0.3 s up to 30 s) instead of stopping for good (a busy file, a disk hiccup). Points that come meanwhile wait and are stored when it opens; queries are told to try again; the client reports each try (`onError`) and keeps `ready` pending. Anything else still stops the worker with its reason: a damaged database (`ETSDB_CORRUPT`), and a folder another engine holds (`ETSDB_LOCKED`: two database nodes on one folder is a mistake to be told at once).
 
-Before this, shortening a `keep` rule made the retention at open rewrite an index file while holding it open: on Windows the open failed (`EPERM: rename ...\idx\0.r0.tmp`) and the worker stopped (code 1) for good. A tag's `keep` follows the rules at every start; only its store (disk or RAM) is fixed when the tag is created.
+Before this, shortening a `keep` rule made the retention at open rewrite an index file while holding it open: on Windows the open failed (`EPERM: rename ...\idx\0.r0.tmp`) and the worker stopped (code 1) for good. A tag's `keep` follows the disk retention at every start.
 
 **Write path.** A point goes to the WAL first. Every `walFlushMs` the WAL is written and fsynced. Every `checkpointMs` a checkpoint runs: chunks that are large enough, old enough or at the end of their segment are written to the segments and fsynced, and only then are the WAL files they covered deleted. A small young chunk stays open in memory, and the WAL files that hold its points are kept until the chunk is written (up to `maxChunkAgeMs`, so up to an hour of a slow tag's points sit in the WAL). Close, `{ op: "checkpoint" }` and the admin operations write every open chunk.
 
@@ -610,6 +620,7 @@ npm run soak:gen && npm run soak:verify   # 5 years of data, random queries agai
 | `robust.test.js` | Time 0 and 1970, wrong clocks, NaN, the folder lock, `clippedFrom`, the store node under overload |
 | `chunking.test.js` | Young chunks held in the WAL, cut by size, age and segment end; a crash with them open |
 | `compact.test.js` | Lazy index trimming, a crash in the middle, the retention time budget |
+| `ramswitch.test.js` | The short-term (RAM) patterns: disk -> RAM -> disk keeps the disk data and appends to it again, RAM starts empty, a RAM pattern is not a per-rule choice, an older `store: "memory"` rule still works, admin operations on a RAM tag, through the real historian |
 | `winfs.test.js` | A busy file (Windows `EPERM`): the rename tries again and gives up with the real error; a retention that cannot rename does not fail the open; a worker whose first open fails with an I/O error tries again and keeps the points, a locked folder is still refused at once; a `keep` rule made shorter between two runs, through the real historian |
 | `batch.test.js` | Batches: order, one failing query among others, one `now`, the size limits, through the worker and the node |
 | `backup.test.js` | Backup while writing, restore equal to the moment of the backup, cut / damaged / hostile files refused with the live database unchanged, operations held during a backup, offline restore |

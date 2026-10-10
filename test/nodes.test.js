@@ -84,6 +84,12 @@ const close = (node) => new Promise((res) => (node._h.close.length ? node._h.clo
         mdb.engine.write('Vib.X', Date.now(), 1);
         assert.deepStrictEqual((await mdb.engine.tags()).map((t) => t.store), ['memory']);
         await close(mdb);
+        const rdb = make('tsdb-config', { id: 'db3', name: 'ram', ram: '[{"pattern":"Vib.*","keep":"10s"}]', rules: '[{"pattern":"Plain","keep":"30d"}]' });
+        await rdb.engine.ready;
+        rdb.engine.write('Vib.X', Date.now(), 1);
+        rdb.engine.write('Plain', Date.now(), 1);
+        assert.deepStrictEqual((await rdb.engine.tags()).map((t) => t.name + ':' + t.store), ['Vib.X:memory', 'Plain:disk'], 'the RAM patterns list and the disk retention list');
+        await close(rdb);
         await close(db);
     });
     await close(store);

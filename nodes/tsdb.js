@@ -25,12 +25,17 @@ module.exports = function (RED) {
         node.name = n.name || 'historian';
         const base = (RED.settings && RED.settings.userDir) || process.cwd();
         node.dir = n.dir ? path.resolve(base, n.dir) : path.join(base, 'tsdb', node.name.replace(/[^\w.-]+/g, '_'));
-        let rules = n.rules;
-        if (typeof rules === 'string') { try { rules = JSON.parse(rules || '[]'); } catch (e) { node.error('storage rules: not JSON (' + e.message + ')'); rules = []; } }
+        // rules: how long the disk data is kept per pattern; ram: the patterns of the short-term store in RAM (older flows keep a RAM
+        // pattern in rules with store: "memory": the engine reads it as one)
+        const list = (name, x) => {
+            if (typeof x === 'string') { try { x = JSON.parse(x || '[]'); } catch (e) { node.error(name + ': not JSON (' + e.message + ')'); x = []; } }
+            return Array.isArray(x) ? x.filter((r) => r && r.pattern) : [];
+        };
         node.engine = openHistorian(node.dir, {
             rawDays: num(n.rawDays, 30), indexDays: num(n.indexDays, 365),
             walFlushMs: num(n.walFlushMs, 1000), checkpointMs: num(n.checkpointMs, 60000),
-            rules: Array.isArray(rules) ? rules.filter((r) => r && r.pattern) : []
+            rules: list('disk retention rules', n.rules),
+            ram: list('RAM patterns', n.ram)
         });
         node.engine.onError = (e) => node.error('historian ' + node.dir + ': ' + e.message);
         node.engine.ready.then((m) => {

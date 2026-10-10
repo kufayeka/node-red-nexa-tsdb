@@ -9,61 +9,76 @@
             indexDays: { value: 365, validate: RED.validators.number() },
             walFlushMs: { value: 1000, validate: RED.validators.number() },
             checkpointMs: { value: 60000, validate: RED.validators.number() },
-            rules: { value: '[]' }
+            rules: { value: '[]' },
+            ram: { value: '[]' }
         },
         label: function () { return this.name || 'historian'; },
         oneditprepare: function () {
-            var rules = [];
+            var rules = [], ram = [];
             try { rules = JSON.parse(this.rules || '[]'); } catch (e) { rules = []; }
+            try { ram = JSON.parse(this.ram || '[]'); } catch (e) { ram = []; }
+            // a flow of an older version keeps a RAM pattern in the disk list with store: "memory": it is shown in the RAM list now
+            var older = rules.filter(function (r) { return r.store === 'memory' || r.store === 'ram'; });
+            rules = rules.filter(function (r) { return !(r.store === 'memory' || r.store === 'ram'); });
+            ram = ram.concat(older);
             var UNIT = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000, w: 604800000, mo: 2592000000, y: 31536000000 };
             function ms(x) { var m = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d|w|mo|y)\s*$/.exec(String(x || '')); return m ? Number(m[1]) * UNIT[m[2]] : NaN; }
-            var box = $('#tsdb-rules');
-            function addRow(r) {
-                r = r || { pattern: '', store: 'disk', keep: '' };
-                var row = $('<div class="tsdb-rule">').css({ border: '1px solid var(--red-ui-form-input-border-color, #ccc)', 'border-radius': '4px', padding: '6px 8px', 'margin-bottom': '6px' }).appendTo(box);
-                var line = $('<div>').css({ display: 'flex', gap: '6px', 'align-items': 'center', 'flex-wrap': 'wrap' }).appendTo(row);
-                var pat = $('<input type="text" class="tsdb-pattern" placeholder="Tag pattern, e.g. Vib.*">').css({ width: '170px' }).val(r.pattern || '').appendTo(line);
-                var store = $('<select class="tsdb-store"><option value="disk">Disk</option><option value="memory">RAM</option></select>').css({ width: '80px' }).val(r.store === 'memory' || r.store === 'ram' ? 'memory' : 'disk').appendTo(line);
-                $('<span>').text('keep').appendTo(line);
-                var keep = $('<input type="text" class="tsdb-keep">').css({ width: '70px' }).val(r.keep || '').appendTo(line);
-                var rawL = $('<span>').text('raw').appendTo(line);
-                var raw = $('<input type="text" class="tsdb-raw" placeholder="30d">').css({ width: '60px' }).val(r.raw || '').appendTo(line);
-                var maxL = $('<span>').text('max points').appendTo(line);
-                var max = $('<input type="number" class="tsdb-max" placeholder="1000000">').css({ width: '95px' }).val(r.max || '').appendTo(line);
-                $('<button type="button" class="red-ui-button red-ui-button-small"><i class="fa fa-trash-o"></i></button>').css({ 'margin-left': 'auto' }).on('click', function () { row.remove(); }).appendTo(line);
-                var note = $('<div class="tsdb-note">').css({ 'font-size': '12px', 'margin-top': '4px' }).appendTo(row);
-                function show() {
-                    var ram = store.val() === 'memory', k = ms(keep.val());
-                    keep.attr('placeholder', ram ? '10s' : 'for ever');
-                    rawL.toggle(!ram); raw.toggle(!ram); maxL.toggle(ram); max.toggle(ram);
-                    var lines = [];
-                    if (ram) {
-                        lines.push('<span style="color:#b45309"><i class="fa fa-exclamation-triangle"></i> RAM: kept only while Node-RED runs - lost on a restart or a redeploy of this database node. Never written to disk (no SSD / SD wear).</span>');
-                        if (k > 3600000) lines.push('<span style="color:#b45309"><i class="fa fa-exclamation-triangle"></i> A long keep in RAM uses memory: about 16 bytes a point (1 tag at 100 ms for 24 h is about 14 MB; 1 000 such tags 14 GB). For history use Disk.</span>');
-                    } else if (k < 3600000 || ms(raw.val()) < 3600000) {
-                        lines.push('<span style="color:#dc2626"><i class="fa fa-times-circle"></i> Disk keeps at least 1 hour (1h is used). For seconds or minutes choose RAM.</span>');
+            function box(sel, isRam) {
+                var host = $(sel);
+                function addRow(r) {
+                    r = r || {};
+                    var row = $('<div class="tsdb-rule">').css({ border: '1px solid var(--red-ui-form-input-border-color, #ccc)', 'border-radius': '4px', padding: '6px 8px', 'margin-bottom': '6px' }).appendTo(host);
+                    var line = $('<div>').css({ display: 'flex', gap: '6px', 'align-items': 'center', 'flex-wrap': 'wrap' }).appendTo(row);
+                    var pat = $('<input type="text" class="tsdb-pattern" placeholder="Tag pattern, e.g. Vib.*">').css({ width: '190px' }).val(r.pattern || '').appendTo(line);
+                    $('<span>').text('keep').appendTo(line);
+                    var keep = $('<input type="text" class="tsdb-keep">').css({ width: '70px' }).attr('placeholder', isRam ? '10s' : 'for ever').val(r.keep || '').appendTo(line);
+                    var raw, max;
+                    if (isRam) {
+                        $('<span>').text('max points').appendTo(line);
+                        max = $('<input type="number" class="tsdb-max" placeholder="1000000">').css({ width: '95px' }).val(r.max || '').appendTo(line);
+                    } else {
+                        $('<span>').text('raw').appendTo(line);
+                        raw = $('<input type="text" class="tsdb-raw" placeholder="30d">').css({ width: '60px' }).val(r.raw || '').appendTo(line);
                     }
-                    if (keep.val() && isNaN(k)) lines.push('<span style="color:#dc2626">Not a duration: use 500ms, 10s, 5m, 2h, 7d, 1y</span>');
-                    note.html(lines.join('<br>'));
+                    $('<button type="button" class="red-ui-button red-ui-button-small"><i class="fa fa-trash-o"></i></button>').css({ 'margin-left': 'auto' }).on('click', function () { row.remove(); }).appendTo(line);
+                    var note = $('<div class="tsdb-note">').css({ 'font-size': '12px', 'margin-top': '4px' }).appendTo(row);
+                    function show() {
+                        var k = ms(keep.val()), lines = [];
+                        if (isRam) {
+                            if (k > 3600000) lines.push('<span style="color:#b45309"><i class="fa fa-exclamation-triangle"></i> A long keep in RAM uses memory: about 16 bytes a point (1 tag at 100 ms for 24 h is about 14 MB; 1 000 such tags 14 GB). For history leave the tag on Disk.</span>');
+                        } else if (k < 3600000 || ms(raw.val()) < 3600000) {
+                            lines.push('<span style="color:#dc2626"><i class="fa fa-times-circle"></i> Disk keeps at least 1 hour (1h is used). For seconds or minutes use a RAM pattern.</span>');
+                        }
+                        if (keep.val() && isNaN(k)) lines.push('<span style="color:#dc2626">Not a duration: use 500ms, 10s, 5m, 2h, 7d, 1y</span>');
+                        note.html(lines.join('<br>'));
+                    }
+                    keep.on('input change', show); if (raw) raw.on('input change', show);
+                    show();
                 }
-                store.on('change', show); keep.on('input change', show); raw.on('input change', show);
-                show();
+                return addRow;
             }
-            rules.forEach(addRow);
-            $('#tsdb-rule-add').on('click', function () { addRow({ pattern: '', store: 'memory', keep: '10s' }); });
+            var addRam = box('#tsdb-ram', true), addDisk = box('#tsdb-rules', false);
+            ram.forEach(addRam);
+            rules.forEach(addDisk);
+            $('#tsdb-ram-add').on('click', function () { addRam({ pattern: '', keep: '10s' }); });
+            $('#tsdb-rule-add').on('click', function () { addDisk({ pattern: '', keep: '' }); });
         },
         oneditsave: function () {
-            var list = [];
-            $('#tsdb-rules .tsdb-rule').each(function () {
-                var row = $(this), r = { pattern: row.find('.tsdb-pattern').val().trim(), store: row.find('.tsdb-store').val() };
-                if (!r.pattern) return;
-                var keep = row.find('.tsdb-keep').val().trim(), raw = row.find('.tsdb-raw').val().trim(), max = row.find('.tsdb-max').val();
-                if (keep) r.keep = keep;
-                if (r.store === 'disk' && raw) r.raw = raw;
-                if (r.store === 'memory' && max) r.max = Number(max);
-                list.push(r);
-            });
-            $('#node-config-input-rules').val(JSON.stringify(list));
+            function read(sel, isRam) {
+                var list = [];
+                $(sel + ' .tsdb-rule').each(function () {
+                    var row = $(this), r = { pattern: row.find('.tsdb-pattern').val().trim() };
+                    if (!r.pattern) return;
+                    var keep = row.find('.tsdb-keep').val().trim(), raw = row.find('.tsdb-raw').val(), max = row.find('.tsdb-max').val();
+                    if (keep) r.keep = keep;
+                    if (!isRam && raw && raw.trim()) r.raw = raw.trim();
+                    if (isRam && max) r.max = Number(max);
+                    list.push(r);
+                });
+                return list;
+            }
+            $('#node-config-input-rules').val(JSON.stringify(read('#tsdb-rules', false)));
+            $('#node-config-input-ram').val(JSON.stringify(read('#tsdb-ram', true)));
         }
     });
 </script>
@@ -74,12 +89,18 @@
     <div class="form-row"><label for="node-config-input-indexDays"><i class="fa fa-clock-o"></i> Summaries</label><input type="number" id="node-config-input-indexDays" style="width:90px"> days <span style="opacity:.7">(per chunk; hour and day summaries are kept)</span></div>
     <div class="form-row"><label for="node-config-input-walFlushMs"><i class="fa fa-shield"></i> WAL sync</label><input type="number" id="node-config-input-walFlushMs" style="width:90px"> ms <span style="opacity:.7">(the most a power cut loses)</span></div>
     <div class="form-row"><label for="node-config-input-checkpointMs"><i class="fa fa-floppy-o"></i> Checkpoint</label><input type="number" id="node-config-input-checkpointMs" style="width:90px"> ms</div>
-    <div class="form-row" style="margin-bottom:4px"><label><i class="fa fa-list-ol"></i> Storage rules</label>
-        <span style="opacity:.75">per tag pattern, the first match wins (<code>*</code> = any text); a tag no rule matches is on Disk</span></div>
+    <div class="form-row" style="margin-bottom:4px"><label><i class="fa fa-bolt"></i> Short-term (RAM)</label>
+        <span style="opacity:.75">tags that match are read and written in RAM only (<code>*</code> = any text); every other tag is on Disk</span></div>
+    <input type="hidden" id="node-config-input-ram">
+    <div id="tsdb-ram" style="margin-left:0"></div>
+    <div class="form-row"><button type="button" id="tsdb-ram-add" class="red-ui-button red-ui-button-small"><i class="fa fa-plus"></i> RAM pattern</button>
+        <span style="opacity:.75;margin-left:8px">Kept only while Node-RED runs; never written to disk. Their disk data, if any, is not touched.</span></div>
+    <div class="form-row" style="margin-bottom:4px"><label><i class="fa fa-hdd-o"></i> Disk retention</label>
+        <span style="opacity:.75">how long the disk data of a tag pattern is kept; the first match wins, no match = the settings above</span></div>
     <input type="hidden" id="node-config-input-rules">
     <div id="tsdb-rules" style="margin-left:0"></div>
-    <div class="form-row"><button type="button" id="tsdb-rule-add" class="red-ui-button red-ui-button-small"><i class="fa fa-plus"></i> rule</button>
-        <span style="opacity:.75;margin-left:8px">Disk: keep 1 h or more (empty = for ever). RAM: any keep, down to seconds.</span></div>
+    <div class="form-row"><button type="button" id="tsdb-rule-add" class="red-ui-button red-ui-button-small"><i class="fa fa-plus"></i> retention</button>
+        <span style="opacity:.75;margin-left:8px">keep 1 h or more (empty = for ever); raw = how long the raw points stay (summaries outlive them).</span></div>
 </script>
 <script type="text/html" data-help-name="tsdb-config">
     <p>A historian database: a folder of compressed time series (Gorilla), with summaries per chunk, hour and day so a chart or a report of any range reads about as many records as the answer has rows.</p>
@@ -88,10 +109,9 @@
         <dt>Folder <span class="property-type">string</span></dt><dd>Empty: <code>&lt;userDir&gt;/tsdb/&lt;name&gt;</code>. A relative path is from the user directory.</dd>
         <dt>Raw kept <span class="property-type">days</span></dt><dd>Raw chunks older than this are deleted; their summaries still draw charts and give aggregates.</dd>
         <dt>WAL sync <span class="property-type">ms</span></dt><dd>Points are written to the write-ahead log and fsynced this often.</dd>
-        <dt>Storage rules</dt><dd>Per tag pattern, the first match wins.
-            <b>Disk</b> (default): <code>keep</code> how long a tag's data is kept (1 h or more; empty = for ever; a query never returns older), <code>raw</code> how long its raw points are (summaries outlive them).
-            <b>RAM</b>: a ring of the tag's last <code>keep</code>, down to seconds (<code>10s</code>), at most <code>max</code> points; never written to disk, <b>lost on a restart or a redeploy of the database node</b>. A long keep in RAM uses memory (about 16 bytes a point): the editor warns.
-            A tag's store is set when it is created.</dd>
+        <dt>Short-term (RAM)</dt><dd>Tag patterns (<code>*</code> = any text, the first match wins) whose tags are read and written in RAM instead of on disk: a ring of the last <code>keep</code> (down to seconds, <code>10s</code>), at most <code>max</code> points; never written to disk, <b>lost on a restart or a redeploy of the database node</b>. A long keep uses memory (about 16 bytes a point): the editor warns.
+            Every tag no pattern matches is on <b>Disk</b>. Changing the patterns is a redeploy, so a tag that moves from Disk to RAM starts with an <b>empty</b> RAM and its disk data stays untouched (a query answers from RAM only while the tag is a RAM tag); moved back to Disk, writes go on appending to the same disk data (until the retention below or a drop removes it).</dd>
+        <dt>Disk retention</dt><dd>Per tag pattern, the first match wins: <code>keep</code> how long a tag's disk data is kept (1 h or more; empty = for ever; a query never returns older), <code>raw</code> how long its raw points are (summaries outlive them). It follows the patterns at every start, also for a tag that is in RAM at the moment.</dd>
     </dl>
 </script>
 
