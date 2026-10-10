@@ -147,6 +147,7 @@ A point before 1970-01-01T01:00 is valid and stored like any other.
 | `maxInFlight` | 2 000 000 | Backpressure limit (client side). |
 | `batchMs` | 50 | How often the client sends its batch to the worker. |
 | `rules` | none | [Storage rules](#storage-rules-disk-or-ram). |
+| `renameBudgetMs` | 1500 | An index file that is busy when it is replaced (Windows answers `EPERM` while any handle is open on it) is tried again for this long; see [A busy file](#a-busy-file-windows). |
 
 ## Asking questions: queries and aggregates
 
@@ -490,6 +491,16 @@ A tag's store (disk or RAM) is fixed when the tag is created; its `keep` follows
 
 ## Reliability
 
+### A busy file (Windows)
+
+Windows refuses to rename a file over one that is open (`EPERM`, also `EACCES` / `EBUSY`): by our own handle, or by another process (the old worker still closing, an indexer, a virus scan). Three rules follow from it:
+
+- **A rename tries again** (`lib/fsx.js`): with growing pauses for a budget (`renameBudgetMs`), then it fails with the real error. A file that is missing, a full disk and the like are thrown at once.
+- **The index compaction closes its own handle before it renames**, and a compaction that still cannot rename is **not an error of the data path**: the open goes on, the file keeps its expired records (a query never returns them anyway: `keep` is applied when reading), `stats.retentionBusy` and `stats.lastRetentionBusy` say it, and the next retention pass tries again. A pass that finds a file busy stops there and starts after that tag next time, so one file that stays busy cannot starve the others.
+- **A worker whose first open fails with an I/O error of the system tries again** with growing pauses (0.3 s up to 30 s) instead of stopping for good (a busy file, a disk hiccup). Points that come meanwhile wait and are stored when it opens; queries are told to try again; the client reports each try (`onError`) and keeps `ready` pending. Anything else still stops the worker with its reason: a damaged database (`ETSDB_CORRUPT`), and a folder another engine holds (`ETSDB_LOCKED`: two database nodes on one folder is a mistake to be told at once).
+
+Before this, shortening a `keep` rule made the retention at open rewrite an index file while holding it open: on Windows the open failed (`EPERM: rename ...\idx\0.r0.tmp`) and the worker stopped (code 1) for good. A tag's `keep` follows the rules at every start; only its store (disk or RAM) is fixed when the tag is created.
+
 **Write path.** A point goes to the WAL first. Every `walFlushMs` the WAL is written and fsynced. Every `checkpointMs` a checkpoint runs: chunks that are large enough, old enough or at the end of their segment are written to the segments and fsynced, and only then are the WAL files they covered deleted. A small young chunk stays open in memory, and the WAL files that hold its points are kept until the chunk is written (up to `maxChunkAgeMs`, so up to an hour of a slow tag's points sit in the WAL). Close, `{ op: "checkpoint" }` and the admin operations write every open chunk.
 
 **Recovery on start.** The last two segments are checked against the index (a torn chunk or record is cut), hour and day summaries are rebuilt from there, and the WAL is replayed (a point already stored is skipped). A power cut or crash loses at most the last `walFlushMs`. Start-up replays the WAL files that were kept, so it reads at most about an hour of points. A point still in the client's 50 ms batch is lost if the whole process dies.
@@ -599,6 +610,7 @@ npm run soak:gen && npm run soak:verify   # 5 years of data, random queries agai
 | `robust.test.js` | Time 0 and 1970, wrong clocks, NaN, the folder lock, `clippedFrom`, the store node under overload |
 | `chunking.test.js` | Young chunks held in the WAL, cut by size, age and segment end; a crash with them open |
 | `compact.test.js` | Lazy index trimming, a crash in the middle, the retention time budget |
+| `winfs.test.js` | A busy file (Windows `EPERM`): the rename tries again and gives up with the real error; a retention that cannot rename does not fail the open; a worker whose first open fails with an I/O error tries again and keeps the points, a locked folder is still refused at once; a `keep` rule made shorter between two runs, through the real historian |
 | `batch.test.js` | Batches: order, one failing query among others, one `now`, the size limits, through the worker and the node |
 | `backup.test.js` | Backup while writing, restore equal to the moment of the backup, cut / damaged / hostile files refused with the live database unchanged, operations held during a backup, offline restore |
 | `calendar.test.js` | Day, week, month, quarter and year edges in Jakarta, Kolkata, New York (daylight saving) and London; increase, delta, integral and counts over those buckets against a brute force; the buckets of a range add up to the range; `auto`; dates read in a zone |
